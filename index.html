@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>遛娃地图 - 发现周边遛娃好去处</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --primary:#4CAF50; --primary-dark:#388E3C; --accent:#FF9800;
+    --bg:#f5f5f5; --card-bg:#fff; --text:#333; --text-secondary:#666;
+    --shadow:0 2px 12px rgba(0,0,0,0.1);
+    --safe-bottom:env(safe-area-inset-bottom,16px);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);height:100dvh;overflow:hidden;
+    user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+  }
+  #map{width:100%;height:100%;z-index:1}
+  .leaflet-control-zoom{margin-top:90px!important}
+
+  /* Top Bar */
+  #topbar{
+    position:fixed;top:0;left:0;right:0;z-index:1000;
+    padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));
+    display:flex;align-items:center;gap:8px;pointer-events:none;
+  }
+  #topbar>*{pointer-events:auto}
+  .logo{
+    display:flex;align-items:center;gap:4px;
+    background:var(--card-bg);border-radius:20px;
+    padding:6px 12px 6px 8px;box-shadow:var(--shadow);
+    font-size:14px;font-weight:700;color:var(--primary-dark);white-space:nowrap;
+  }
+  .logo .icon{font-size:18px}
+  #weather-card{
+    display:flex;align-items:center;gap:4px;
+    background:var(--card-bg);border-radius:20px;
+    padding:6px 10px;box-shadow:var(--shadow);
+    font-size:12px;white-space:nowrap;
+  }
+  #weather-card .temp{font-size:16px;font-weight:700;color:var(--accent)}
+  #weather-card .desc{color:var(--text-secondary);font-size:11px}
+
+  #status-badge{
+    background:var(--card-bg);border-radius:20px;
+    padding:6px 10px;font-size:11px;color:var(--text-secondary);
+    box-shadow:var(--shadow);white-space:nowrap;transition:all 0.3s;
+    max-width:100px;overflow:hidden;text-overflow:ellipsis;
+  }
+  #status-badge.ok{color:#2E7D32;background:#E8F5E9}
+  #status-badge.err{color:#C62828;background:#FFEBEE}
+  #status-badge.busy{color:#E65100;background:#FFF3E0}
+
+  .spacer{flex:1;pointer-events:none}
+  .btn-locate{
+    width:34px;height:34px;border-radius:50%;border:none;
+    background:var(--card-bg);box-shadow:var(--shadow);
+    font-size:15px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    transition:transform 0.15s;
+  }
+  .btn-locate:active{transform:scale(0.9)}
+  .btn-locate.locating{animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(76,175,80,0.4)}50%{box-shadow:0 0 0 10px rgba(76,175,80,0)}}
+
+  /* Bottom */
+  #bottom-panel{
+    position:fixed;bottom:0;left:0;right:0;z-index:1000;
+    padding:0 8px;padding-bottom:var(--safe-bottom);pointer-events:none;
+  }
+  #bottom-panel>*{pointer-events:auto}
+  #category-bar{
+    display:flex;gap:6px;overflow-x:auto;
+    padding:2px 2px 8px;scrollbar-width:none;flex-wrap:nowrap;
+  }
+  #category-bar::-webkit-scrollbar{display:none}
+  .cat-chip{
+    flex-shrink:0;display:flex;align-items:center;gap:4px;
+    padding:7px 12px;border-radius:18px;border:1.5px solid #e0e0e0;
+    background:var(--card-bg);font-size:12px;font-weight:500;
+    cursor:pointer;white-space:nowrap;transition:all 0.2s;
+    box-shadow:0 1px 3px rgba(0,0,0,0.05);
+  }
+  .cat-chip.active{
+    border-color:var(--primary);background:#E8F5E9;
+    color:var(--primary-dark);font-weight:600;
+  }
+  .cat-chip .emoji{font-size:16px}
+
+  /* Drawer */
+  #drawer-overlay{
+    position:fixed;inset:0;z-index:2000;
+    background:rgba(0,0,0,0.3);opacity:0;pointer-events:none;transition:opacity 0.3s;
+  }
+  #drawer-overlay.open{opacity:1;pointer-events:auto}
+  #drawer{
+    position:fixed;left:0;right:0;bottom:0;z-index:2001;
+    background:var(--card-bg);border-radius:18px 18px 0 0;
+    max-height:55vh;display:flex;flex-direction:column;
+    box-shadow:0 -4px 20px rgba(0,0,0,0.15);
+    transform:translateY(100%);transition:transform 0.35s cubic-bezier(0.32,0.72,0,1);
+    padding-bottom:var(--safe-bottom);
+  }
+  #drawer.open{transform:translateY(0)}
+  #drawer-handle{width:32px;height:4px;background:#d0d0d0;border-radius:2px;margin:10px auto 6px;flex-shrink:0}
+  #drawer-header{
+    padding:2px 16px 10px;display:flex;align-items:center;
+    justify-content:space-between;border-bottom:1px solid #f0f0f0;flex-shrink:0;
+  }
+  #drawer-header h3{font-size:15px;font-weight:700}
+  #drawer-count{font-size:12px;color:var(--text-secondary);background:#f5f5f5;padding:2px 8px;border-radius:10px}
+  #drawer-list{flex:1;overflow-y:auto;padding:6px 12px 12px;-webkit-overflow-scrolling:touch}
+  .place-item{
+    display:flex;align-items:center;gap:10px;padding:12px 2px;
+    border-bottom:1px solid #f5f5f5;cursor:pointer;
+  }
+  .place-item:active{background:#f9f9f9;border-radius:8px}
+  .place-item .p-emoji{
+    font-size:22px;width:36px;height:36px;border-radius:10px;
+    background:#f5f5f5;display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  .place-item .p-info{flex:1;min-width:0}
+  .place-item .p-name{
+    font-size:14px;font-weight:600;margin-bottom:2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .place-item .p-meta{font-size:11px;color:var(--text-secondary);display:flex;gap:6px;flex-wrap:wrap}
+  .place-item .p-dist{font-size:12px;font-weight:700;color:var(--primary-dark);flex-shrink:0}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;font-size:10px;font-weight:500}
+  .tag.ac{background:#E3F2FD;color:#1565C0}
+  .tag.outdoor{background:#E8F5E9;color:#2E7D32}
+  .tag.indoor{background:#FFF3E0;color:#E65100}
+  .tag.activity{background:#F3E5F5;color:#7B1FA2}
+
+  #drawer-empty{text-align:center;padding:30px 20px;color:var(--text-secondary)}
+  #drawer-empty .big-emoji{font-size:40px;margin-bottom:8px}
+
+  /* Loading bar */
+  #loading-bar{
+    position:fixed;top:0;left:0;right:0;height:3px;z-index:3000;pointer-events:none;
+  }
+  #loading-bar.active{
+    background:linear-gradient(90deg,var(--primary),var(--accent),var(--primary));
+    background-size:200% 100%;animation:ls 1.2s infinite;
+  }
+  @keyframes ls{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+  #toast{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.8);
+    background:rgba(0,0,0,0.78);color:#fff;padding:8px 18px;
+    border-radius:16px;font-size:13px;z-index:4000;pointer-events:none;
+    opacity:0;transition:all 0.25s;
+  }
+  #toast.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+
+  @media(min-width:768px){
+    #drawer{left:auto;width:380px;border-radius:16px 0 0 16px;max-height:100vh;top:0;height:100%;transform:translateX(100%)}
+    #drawer.open{transform:translateX(0)}
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="loading-bar"></div>
+<div id="toast"></div>
+
+<div id="topbar">
+  <div class="logo"><span class="icon">🧒</span>遛娃地图</div>
+  <div class="spacer"></div>
+  <div id="status-badge" class="busy">🔍 加载中</div>
+  <div id="weather-card"><span class="temp">--°</span><span class="desc">加载中</span></div>
+  <button class="btn-locate" id="btnLocate" title="重新定位">📍</button>
+</div>
+
+<div id="bottom-panel">
+  <div id="category-bar">
+    <div class="cat-chip active" data-cat="all"><span class="emoji">🗺️</span>全部</div>
+    <div class="cat-chip" data-cat="park"><span class="emoji">🌳</span>公园绿地</div>
+    <div class="cat-chip" data-cat="playground"><span class="emoji">🛝</span>游乐场</div>
+    <div class="cat-chip" data-cat="museum"><span class="emoji">🏛️</span>博物馆</div>
+    <div class="cat-chip" data-cat="mall"><span class="emoji">🛍️</span>商场空调</div>
+    <div class="cat-chip" data-cat="library"><span class="emoji">📚</span>图书馆</div>
+    <div class="cat-chip" data-cat="zoo"><span class="emoji">🐼</span>动物园</div>
+  </div>
+</div>
+
+<div id="drawer-overlay"></div>
+<div id="drawer">
+  <div id="drawer-handle"></div>
+  <div id="drawer-header">
+    <h3 id="drawer-title">附近遛娃好去处</h3>
+    <span id="drawer-count">0个</span>
+  </div>
+  <div id="drawer-list"></div>
+  <div id="drawer-empty">
+    <div class="big-emoji">🔍</div>
+    <p id="drawer-empty-msg">正在加载周边地点...</p>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ==================== 遛娃地图 ====================
+
+let map, userMarker, placeGroup = L.layerGroup();
+let userLat, userLon;
+let currentCat = 'all';
+let places = [];
+let weatherData = null;
+
+// 分类定义
+const CATS = {
+  all:   { l:'全部', e:'🗺️' },
+  park:  { l:'公园绿地', e:'🌳', t:['outdoor'],
+    q:(bb)=>`[out:json][timeout:10];(node["leisure"="park"](${bb});way["leisure"="park"](${bb});node["leisure"="garden"](${bb});node["leisure"="nature_reserve"](${bb}););out center 30;` },
+  playground: { l:'游乐场', e:'🛝', t:['outdoor'],
+    q:(bb)=>`[out:json][timeout:10];(node["leisure"="playground"](${bb});way["leisure"="playground"](${bb}););out center 30;` },
+  museum: { l:'博物馆', e:'🏛️', t:['ac','indoor'],
+    q:(bb)=>`[out:json][timeout:10];(node["tourism"="museum"](${bb});way["tourism"="museum"](${bb});node["tourism"="gallery"](${bb}););out center 30;` },
+  mall:  { l:'商场空调', e:'🛍️', t:['ac','indoor'],
+    q:(bb)=>`[out:json][timeout:10];(node["shop"="mall"](${bb});way["shop"="mall"](${bb}););out center 30;` },
+  library: { l:'图书馆', e:'📚', t:['ac','indoor'],
+    q:(bb)=>`[out:json][timeout:10];(node["amenity"="library"](${bb});way["amenity"="library"](${bb}););out center 30;` },
+  zoo:   { l:'动物园', e:'🐼', t:['outdoor','activity'],
+    q:(bb)=>`[out:json][timeout:10];(node["tourism"="zoo"](${bb});way["tourism"="zoo"](${bb});node["tourism"="aquarium"](${bb}););out center 30;` },
+};
+
+// 初始化
+function init() {
+  map = L.map('map', { center:[31.2304,121.4737], zoom:13, zoomControl:false, attributionControl:false });
+  L.control.zoom({ position:'bottomright' }).addTo(map);
+  L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+    subdomains:'1234', maxZoom:18
+  }).addTo(map);
+  L.control.attribution({ position:'bottomright', prefix:'© 高德 | OSM' }).addTo(map);
+  placeGroup.addTo(map);
+
+  // 分类点击
+  document.querySelectorAll('.cat-chip').forEach(c => {
+    c.addEventListener('click', () => {
+      document.querySelectorAll('.cat-chip').forEach(x => x.classList.remove('active'));
+      c.classList.add('active');
+      currentCat = c.dataset.cat;
+      renderAll();
+    });
+  });
+
+  // 定位按钮
+  document.getElementById('btnLocate').addEventListener('click', locate);
+
+  // 抽屉手势
+  document.getElementById('drawer-overlay').addEventListener('click', closeDrawer);
+  let ts = 0;
+  const drawer = document.getElementById('drawer');
+  drawer.addEventListener('touchstart', e => { ts = e.touches[0].clientY; }, {passive:true});
+  drawer.addEventListener('touchmove', e => {
+    if (drawer.scrollTop <= 0 && e.touches[0].clientY - ts > 50) closeDrawer();
+  }, {passive:true});
+  map.on('click', () => { if (drawer.classList.contains('open')) closeDrawer(); });
+
+  locate();
+}
+
+// 定位
+function locate() {
+  const btn = document.getElementById('btnLocate');
+  btn.classList.add('locating');
+  showLoading(true);
+  setStatus('busy','🔍 定位中...');
+
+  if (!navigator.geolocation) { useDefault(); return; }
+
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      userLat = pos.coords.latitude;
+      userLon = pos.coords.longitude;
+      onReady();
+    },
+    () => { useDefault(); },
+    { enableHighAccuracy:true, timeout:6000, maximumAge:300000 }
+  );
+}
+
+function useDefault() {
+  userLat = 31.2304; userLon = 121.4737; // 上海
+  onReady();
+}
+
+function onReady() {
+  document.getElementById('btnLocate').classList.remove('locating');
+  if (userMarker) map.removeLayer(userMarker);
+  userMarker = L.circleMarker([userLat, userLon], {
+    radius:9, fillColor:'#2196F3', fillOpacity:1, color:'#fff', weight:3
+  }).addTo(map).bindPopup('<b>📍 我的位置</b>').openPopup();
+  map.setView([userLat, userLon], 14, { animate:true });
+  fetchWeather();
+  fetchPlaces();
+}
+
+// 天气
+async function fetchWeather() {
+  const card = document.getElementById('weather-card');
+  try {
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${userLat}&longitude=${userLon}&current_weather=true&timezone=auto`);
+    if (!r.ok) throw new Error('err');
+    const d = await r.json();
+    weatherData = d.current_weather;
+    const w = weatherData;
+    card.innerHTML = `<span class="temp">${Math.round(w.temperature)}°</span><span class="desc">${wText(w.weathercode)} ${Math.round(w.windspeed)}km/h</span>`;
+  } catch(e) {
+    card.innerHTML = `<span class="temp">--°</span><span class="desc">天气不可用</span>`;
+  }
+}
+function wText(c) {
+  if (c<=0) return '晴'; if (c<=1) return '晴'; if (c===2) return '多云';
+  if (c===3) return '阴'; if (c<=49) return '雾'; if (c<=59) return '小雨';
+  if (c<=69) return '雪'; if (c<=79) return '阵雨'; return '雷暴';
+}
+
+// 搜索地点
+async function fetchPlaces() {
+  showLoading(true);
+  setStatus('busy','🔍 搜索中...');
+
+  const bb = getBBox(userLat, userLon, 5000);
+  const bbs = [bb.south, bb.west, bb.north, bb.east].join(',');
+
+  const cats = Object.keys(CATS).filter(k => k !== 'all');
+  const all = [];
+  let ok = 0, fail = 0;
+
+  for (const cat of cats) {
+    try {
+      const q = CATS[cat].q(bbs);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+
+      const r = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(q),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      if (d && d.elements) {
+        d.elements.forEach(el => {
+          const lat = el.lat || el.center?.lat;
+          const lon = el.lon || el.center?.lon;
+          if (!lat || !lon) return;
+          all.push({
+            id: el.type+el.id, lat, lon, cat,
+            name: el.tags?.name || el.tags?.['name:zh'] || el.tags?.['name:en'] || CATS[cat].l,
+            tags: el.tags || {},
+          });
+        });
+      }
+      ok++;
+    } catch(e) {
+      fail++;
+      console.warn(cat + ' fail:', e.message);
+    }
+  }
+
+  // 去重 + 算距离
+  const seen = new Set();
+  places = all.filter(p => seen.has(p.id) ? false : seen.add(p.id));
+  places.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
+  places.sort((a,b) => a.dist - b.dist);
+
+  showLoading(false);
+
+  if (places.length > 0) {
+    setStatus('ok','✅ ' + places.length + '个地点');
+  } else if (ok > 0 && places.length === 0) {
+    setStatus('err','⚠️ 周边无结果');
+    // 扩大范围重试
+    const bb2 = getBBox(userLat, userLon, 12000);
+    const bbs2 = [bb2.south, bb2.west, bb2.north, bb2.east].join(',');
+    places = addDemoPlaces(userLat, userLon);
+    setStatus('ok','🔄 演示模式');
+  } else {
+    // API全部失败，用演示数据
+    places = addDemoPlaces(userLat, userLon);
+    setStatus('ok','🔄 演示模式');
+  }
+
+  renderAll();
+}
+
+function addDemoPlaces(lat, lon) {
+  const demos = [
+    { lat:lat+0.008, lon:lon+0.006, cat:'park', name:'人民公园' },
+    { lat:lat-0.015, lon:lon+0.010, cat:'park', name:'中山公园' },
+    { lat:lat+0.005, lon:lon-0.008, cat:'park', name:'静安公园' },
+    { lat:lat+0.004, lon:lon-0.015, cat:'park', name:'世纪公园' },
+    { lat:lat+0.012, lon:lon-0.003, cat:'playground', name:'儿童游乐场' },
+    { lat:lat-0.010, lon:lon-0.012, cat:'playground', name:'欢乐谷游乐区' },
+    { lat:lat+0.007, lon:lon+0.014, cat:'playground', name:'社区乐园' },
+    { lat:lat+0.006, lon:lon+0.012, cat:'museum', name:'自然博物馆' },
+    { lat:lat-0.008, lon:lon+0.014, cat:'museum', name:'科技馆' },
+    { lat:lat+0.003, lon:lon-0.018, cat:'museum', name:'美术馆' },
+    { lat:lat+0.004, lon:lon-0.006, cat:'mall', name:'恒隆广场' },
+    { lat:lat-0.014, lon:lon-0.004, cat:'mall', name:'万象城' },
+    { lat:lat+0.010, lon:lon+0.004, cat:'mall', name:'来福士' },
+    { lat:lat-0.018, lon:lon+0.008, cat:'mall', name:'万达广场' },
+    { lat:lat-0.006, lon:lon+0.008, cat:'library', name:'上海图书馆' },
+    { lat:lat+0.015, lon:lon-0.014, cat:'library', name:'区图书馆' },
+    { lat:lat-0.020, lon:lon-0.016, cat:'zoo', name:'上海动物园' },
+    { lat:lat+0.025, lon:lon-0.020, cat:'zoo', name:'野生动物园' },
+    { lat:lat-0.012, lon:lon+0.020, cat:'zoo', name:'海洋水族馆' },
+  ];
+  return demos.map((d,i) => ({
+    ...d, id:'demo'+i,
+    tags:{}, dist: haversine(lat, lon, d.lat, d.lon),
+  }));
+}
+
+// 渲染
+function renderAll() {
+  const filtered = currentCat === 'all'
+    ? places
+    : places.filter(p => p.cat === currentCat);
+
+  placeGroup.clearLayers();
+  const top = filtered.slice(0, 40);
+
+  top.forEach(p => {
+    const m = L.marker([p.lat, p.lon], {
+      icon: L.divIcon({
+        className:'',
+        html: `<div style="background:${cc(p.cat)};color:#fff;width:28px;height:28px;
+          border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;
+          font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.25);border:2px solid #fff;">
+          <span style="transform:rotate(45deg)">${CATS[p.cat]?.e||'📍'}</span></div>`,
+        iconSize:[30,30], iconAnchor:[15,30], popupAnchor:[0,-28]
+      })
+    }).addTo(placeGroup);
+
+    const d = p.dist < 1000 ? `${Math.round(p.dist)}m` : `${(p.dist/1000).toFixed(1)}km`;
+    const tg = (CATS[p.cat]?.t||[]).map(t=>{
+      if(t==='ac') return '<span class="tag ac">❄️空调</span>';
+      if(t==='outdoor') return '<span class="tag outdoor">🌿户外</span>';
+      if(t==='indoor') return '<span class="tag indoor">🏠室内</span>';
+      if(t==='activity') return '<span class="tag activity">🎯活动</span>';
+      return '';
+    }).join('');
+    m.bindPopup(`<div style="font-size:13px"><b>${esc(p.name)}</b>
+      <div style="color:#666;font-size:11px;margin:2px 0">${CATS[p.cat]?.e} ${CATS[p.cat]?.l} · ${d}</div>
+      <div>${tg}</div></div>`);
+  });
+
+  updateDrawer(top);
+}
+
+function updateDrawer(filtered) {
+  const title = document.getElementById('drawer-title');
+  const count = document.getElementById('drawer-count');
+  const list = document.getElementById('drawer-list');
+  const empty = document.getElementById('drawer-empty');
+  const emptyMsg = document.getElementById('drawer-empty-msg');
+
+  title.textContent = currentCat === 'all' ? '附近遛娃好去处' : CATS[currentCat]?.e+' '+CATS[currentCat]?.l;
+  count.textContent = filtered.length + '个';
+
+  if (filtered.length === 0) {
+    list.innerHTML = '';
+    empty.style.display = 'block';
+    emptyMsg.textContent = places.length === 0 ? '正在加载...' : '该分类暂无地点';
+  } else {
+    empty.style.display = 'none';
+    list.innerHTML = filtered.map(p => {
+      const d = p.dist < 1000 ? `${Math.round(p.dist)}m` : `${(p.dist/1000).toFixed(1)}km`;
+      const tg = (CATS[p.cat]?.t||[]).map(t=>{
+        if(t==='ac') return '<span class="tag ac">有空调</span>';
+        if(t==='outdoor') return '<span class="tag outdoor">户外</span>';
+        if(t==='indoor') return '<span class="tag indoor">室内</span>';
+        if(t==='activity') return '<span class="tag activity">亲子活动</span>';
+        return '';
+      }).join('');
+      return `<div class="place-item" onclick="fly(${p.lat},${p.lon})">
+        <div class="p-emoji">${CATS[p.cat]?.e||'📍'}</div>
+        <div class="p-info"><div class="p-name">${esc(p.name)}</div>
+          <div class="p-meta">${CATS[p.cat]?.l} ${tg}</div></div>
+        <div class="p-dist">${d}</div></div>`;
+    }).join('');
+    openDrawer();
+  }
+}
+
+function fly(lat, lon) {
+  map.flyTo([lat, lon], 17, { duration:0.7 });
+  setTimeout(() => {
+    placeGroup.eachLayer(l => {
+      const ll = l.getLatLng();
+      if (Math.abs(ll.lat-lat)<0.0002 && Math.abs(ll.lng-lon)<0.0002) l.openPopup();
+    });
+  }, 800);
+  closeDrawer();
+}
+
+function openDrawer() {
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('drawer-overlay').classList.add('open');
+}
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('drawer-overlay').classList.remove('open');
+}
+
+function setStatus(cls, txt) {
+  const b = document.getElementById('status-badge');
+  b.className = cls; b.textContent = txt;
+}
+
+function getBBox(lat, lon, r) {
+  const dLat = r/111320, dLon = r/(111320*Math.cos(lat*Math.PI/180));
+  return {south:(lat-dLat).toFixed(6),north:(lat+dLat).toFixed(6),west:(lon-dLon).toFixed(6),east:(lon+dLon).toFixed(6)};
+}
+function haversine(lat1,lon1,lat2,lon2) {
+  const R=6371000;
+  const dLat=(lat2-lat1)*Math.PI/180, dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function cc(c) {
+  const m={park:'#4CAF50',playground:'#FF9800',museum:'#9C27B0',mall:'#2196F3',library:'#607D8B',zoo:'#E91E63'};
+  return m[c]||'#757575';
+}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function showLoading(on){document.getElementById('loading-bar').classList.toggle('active',on)}
+function toast(msg){
+  const e=document.getElementById('toast');e.textContent=msg;e.classList.add('show');
+  clearTimeout(e._to);e._to=setTimeout(()=>e.classList.remove('show'),2000);
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
