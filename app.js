@@ -432,8 +432,13 @@ function renderAll() {
       <div>${tg}</div>${addrLine}</div>`);
   });
 
+  // Kick off async address lookups (throttled queue, 1/sec)
+  top.forEach(function(p) {
+    enqueueAddress(p);
+  });
   updateDrawer(top);
 }
+
 
 function updateDrawer(filtered) {
   const title = document.getElementById('drawer-title');
@@ -472,16 +477,16 @@ function updateDrawer(filtered) {
       const d = formatDistance(p.dist);
       const tg = buildTagHtml(p.cat);
       const addr = formatAddress(p.tags, p.lat, p.lon);
-      const addrHtml = addr ? `<div class="p-addr">📍 ${escHtml(addr)}</div>` : '';
-      return `<div class="place-item" onclick="flyTo(${p.lat},${p.lon})">
-        <div class="p-emoji">${CATS[p.cat]?.e || '📍'}</div>
-        <div class="p-info">
-          <div class="p-name">${escHtml(p.name)}</div>
-          <div class="p-meta">${CATS[p.cat]?.l} ${tg}</div>
-          ${addrHtml}
-        </div>
-        <div class="p-dist">${d}</div>
-      </div>`;
+      const addrText = addr ? escHtml(addr) : '';
+      return '<div class="place-item" data-id="' + p.id + '" onclick="flyTo(' + p.lat + ',' + p.lon + ')">' +
+        '<div class="p-emoji">' + (CATS[p.cat]?.e || '📍') + '</div>' +
+        '<div class="p-info">' +
+          '<div class="p-name">' + escHtml(p.name) + '</div>' +
+          '<div class="p-meta">' + CATS[p.cat]?.l + ' ' + tg + '</div>' +
+          '<div class="p-addr" style="' + (addrText ? '' : 'display:none') + '">' + (addrText ? '📍 ' + addrText : '') + '</div>' +
+        '</div>' +
+        '<div class="p-dist">' + d + '</div>' +
+      '</div>';
     }).join('');
     openDrawer();
   }
@@ -541,23 +546,89 @@ function getBBox(lat, lon, radiusM) {
   };
 }
 
-// OSM tags 中提取地址：addr:city / addr:district / addr:street
+// 地址缓存：避免重复请求逆地理编码
+var _addrCache = {};
+
+// 逆地理请求队列，限速 1 次/秒（Nominatim 公平使用政策）
+var _addrQueue = [];
+var _addrTimer = null;
+
+function enqueueAddress(p) {
+  if (cachedAddress(p.lat, p.lon)) return; // 已有缓存
+  var key = p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
+  if (_addrCache[key] !== undefined) return; // 已请求过
+  _addrCache[key] = null; // 标记为请求中
+  _addrQueue.push(p);
+  if (!_addrTimer) flushQueue();
+}
+
+function flushQueue() {
+  if (_addrQueue.length === 0) { _addrTimer = null; return; }
+  var p = _addrQueue.shift();
+  var lat = p.lat, lon = p.lon;
+  var key = lat.toFixed(4) + ',' + lon.toFixed(4);
+
+  var url = 'https://nominatim.openstreetmap.org/reverse?lat=' + lat +
+    '&lon=' + lon + '&format=json&zoom=16&accept-language=zh';
+  var ctrl = new AbortController();
+  var t = setTimeout(function() { ctrl.abort(); }, 5000);
+
+  fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'LiuwaMap/1.0' } })
+    .then(function(resp) { clearTimeout(t); return resp.ok ? resp.json() : Promise.reject(); })
+    .then(function(data) {
+      var addr = data.display_name || '';
+      addr = addr.replace(/,?\s*\d{6}/g, '').replace(/，?\s*\d{6}/g, '');
+      var parts = addr.split(',');
+      if (parts.length > 4) parts = parts.slice(0, 4);
+      addr = parts.join(',').replace(/^,\s*/, '').trim();
+      _addrCache[key] = addr;
+      // 更新抽屉：只更新地址文字，不用重渲染
+      updateAddressText(p, addr);
+    }).catch(function() {
+      _addrCache[key] = '';
+    }).finally(function() {
+      _addrTimer = setTimeout(flushQueue, 1200); // 1.2s 间隔
+    });
+}
+
+// DOM 局部更新：只替换地址文本
+function updateAddressText(p, addr) {
+  var items = document.querySelectorAll('.place-item');
+  var target = p.id;
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var addrEl = item.querySelector('.p-addr');
+    if (addrEl && item.getAttribute('data-id') === target) {
+      addrEl.textContent = '📍 ' + addr;
+      addrEl.style.display = '';
+      break;
+    }
+  }
+}
+
+// 同步版本：从缓存拿（如果还没加载完就返回空，避免阻塞渲染）
+function cachedAddress(lat, lon) {
+  var key = lat.toFixed(4) + ',' + lon.toFixed(4);
+  return _addrCache[key] || '';
+}
+
+// OSM tags 中提取地址（优先用 tags，兜底用逆地理缓存）
 function formatAddress(tags, lat, lon) {
-  const prov = tags['addr:province'] || tags['province'] || '';
-  const city = tags['addr:city'] || tags['city'] || '';
-  const dist = tags['addr:district'] || tags['district'] || tags['addr:suburb'] || tags['addr:county'] || '';
-  const street = tags['addr:street'] || tags['street'] || '';
-  const hn = tags['addr:housenumber'] || '';
+  var city = tags['addr:city'] || tags['city'] || '';
+  var dist = tags['addr:district'] || tags['district'] || tags['addr:suburb'] || tags['addr:county'] || '';
+  var street = tags['addr:street'] || tags['street'] || '';
+  var hn = tags['addr:housenumber'] || '';
+
   if (city || dist || street) {
-    const p = [];
-    if (prov && prov !== city) p.push(prov);
+    var p = [];
     if (city) p.push(city.endsWith('市') ? city : city + '市');
     if (dist) p.push(dist);
     if (street) p.push(street + (hn ? hn + '号' : ''));
     return p.join('');
   }
-  var isIn = tags['is_in:city'] || tags['is_in:province'] || tags['is_in'];
-  return isIn || '';
+
+  // Fallback: check cached reverse-geocoded address
+  return cachedAddress(lat, lon);
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
