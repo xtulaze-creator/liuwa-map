@@ -338,7 +338,7 @@ async function fetchAmapPOI(cat, locStr, radius) {
   // Try direct fetch first (works through proxy, or if Amap adds CORS)
   try {
     var ctrl = new AbortController();
-    var t = setTimeout(function() { ctrl.abort(); }, 8000);
+    var t = setTimeout(function() { ctrl.abort(); }, 15000);
     var resp = await fetch(url, { signal: ctrl.signal });
     clearTimeout(t);
     if (resp.ok) {
@@ -358,8 +358,8 @@ async function fetchAmapPOI(cat, locStr, radius) {
     var t = setTimeout(function() {
       timedOut = true;
       cleanup();
-      resolve([]); // Silent fallback: empty result
-    }, 8000);
+      resolve([]);
+    }, 15000);
 
     window[cbName] = function(data) {
       if (timedOut) return;
@@ -458,7 +458,7 @@ function updateDrawer(filtered) {
 
   title.textContent = currentCat === 'all'
     ? '附近遛娃好去处'
-    : CATS[currentCat]?.e + ' ' + CATS[currentCat]?.l;
+    : ((CATS[currentCat] && CATS[currentCat].e + ' ' + CATS[currentCat].l) || currentCat);
   count.textContent = filtered.length + '个';
 
   if (filtered.length === 0) {
