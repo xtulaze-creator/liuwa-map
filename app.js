@@ -282,17 +282,73 @@ async function fetchPlaces() {
 
 async function fetchAmapPOI(cat, locStr, radius) {
   var types = CATS[cat].types;
-  var url = 'https://restapi.amap.com/v3/place/around?key=' + AMAP_KEY +
-    '&location=' + locStr + '&radius=' + radius +
-    '&types=' + encodeURIComponent(types) +
-    '&offset=25&output=json';
-  var ctrl = new AbortController();
-  var t = setTimeout(function() { ctrl.abort(); }, 8000);
-  var resp = await fetch(url, { signal: ctrl.signal });
-  clearTimeout(t);
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  var data = await resp.json();
-  if (data.status !== '1') throw new Error(data.info || 'API error');
+  var params = [
+    'key=' + AMAP_KEY,
+    'location=' + locStr,
+    'radius=' + radius,
+    'types=' + encodeURIComponent(types),
+    'offset=25',
+    'output=json'
+  ].join('&');
+  var url = 'https://restapi.amap.com/v3/place/around?' + params;
+
+  // Try direct fetch first (works through proxy, or if Amap adds CORS)
+  try {
+    var ctrl = new AbortController();
+    var t = setTimeout(function() { ctrl.abort(); }, 8000);
+    var resp = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (resp.ok) {
+      var data = await resp.json();
+      if (data && data.status === '1') {
+        return parseAmapResults(data);
+      }
+    }
+  } catch(e) {
+    console.log('Direct fetch failed, trying JSONP...');
+  }
+
+  // JSONP fallback for browser CORS restriction
+  return new Promise(function(resolve, reject) {
+    var cbName = '_amapCb_' + (Math.random() + '').replace('.', '');
+    var timedOut = false;
+    var t = setTimeout(function() {
+      timedOut = true;
+      cleanup();
+      resolve([]); // Silent fallback: empty result
+    }, 8000);
+
+    window[cbName] = function(data) {
+      if (timedOut) return;
+      cleanup();
+      try {
+        if (data && data.status === '1') {
+          resolve(parseAmapResults(data));
+        } else {
+          resolve([]);
+        }
+      } catch(e) {
+        resolve([]);
+      }
+    };
+
+    var script = document.createElement('script');
+    script.src = url + '&callback=' + cbName;
+    script.onerror = function() {
+      if (!timedOut) { cleanup(); resolve([]); }
+    };
+    document.head.appendChild(script);
+
+    function cleanup() {
+      clearTimeout(t);
+      window[cbName] = undefined;
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+  });
+}
+
+// Parse Amap POI results into our format
+function parseAmapResults(data) {
   return (data.pois || []).map(function(p) {
     var loc = p.location.split(',');
     return {
