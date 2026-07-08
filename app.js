@@ -60,11 +60,11 @@ const CATS = {
   all: { l: '全部', e: '🗺️' },
   park: {
     l: '公园绿地', e: '🌳', t: ['outdoor'],
-    q: (bb) => `[out:json][timeout:10];(node["leisure"="park"](${bb});way["leisure"="park"](${bb});node["leisure"="garden"](${bb});way["leisure"="garden"](${bb});node["leisure"="nature_reserve"](${bb});way["leisure"="nature_reserve"](${bb}););out center;out geom;`
+    q: (bb) => `[out:json][timeout:10];(node["leisure"="park"](${bb});way["leisure"="park"](${bb});node["leisure"="garden"](${bb});way["leisure"="garden"](${bb});node["leisure"="nature_reserve"](${bb});way["leisure"="nature_reserve"](${bb}););out center 30;`
   },
   playground: {
     l: '游乐场', e: '🛝', t: ['outdoor'],
-    q: (bb) => `[out:json][timeout:10];(node["leisure"="playground"](${bb});way["leisure"="playground"](${bb}););out center;out geom;`
+    q: (bb) => `[out:json][timeout:10];(node["leisure"="playground"](${bb});way["leisure"="playground"](${bb}););out center 30;`
   },
   museum: {
     l: '博物馆', e: '🏛️', t: ['ac', 'indoor'],
@@ -80,7 +80,7 @@ const CATS = {
   },
   zoo: {
     l: '动物园', e: '🐼', t: ['outdoor', 'activity'],
-    q: (bb) => `[out:json][timeout:10];(node["tourism"="zoo"](${bb});way["tourism"="zoo"](${bb});node["tourism"="aquarium"](${bb}));out center;out geom;`
+    q: (bb) => `[out:json][timeout:10];(node["tourism"="zoo"](${bb});way["tourism"="zoo"](${bb});node["tourism"="aquarium"](${bb}));out center 30;`
   },
 };
 
@@ -230,175 +230,124 @@ function weatherAdvice(code, temp) {
 
 // ---- Places Search ----
 
-// Given an OSM way geometry (array of [lat, lon] pairs from out geom),
-// find the closest point on the polygon boundary to (refLat, refLon).
-// Returns {lat, lon} — a point guaranteed to be on the polygon.
-function closestOnGeometry(geom, refLat, refLon) {
-  if (!geom || !geom.length) return null;
-  const coords = [];
-  // Flatten OSM geometry: handles Polygon and MultiPolygon formats
-  const walk = (arr) => {
-    if (!arr || !arr.length) return;
-    if (typeof arr[0] === 'number') {
-      coords.push(arr);  // [lon, lat] pair
-      return;
-    }
-    // Nested array: could be a ring or multi-polygon
-    for (const sub of arr) {
-      if (sub && sub.length && typeof sub[0] === 'number') {
-        coords.push(sub);
-      } else if (sub) {
-        walk(sub);
-      }
-    }
-  };
-  walk(geom);
-  
-  if (coords.length < 2) return coords.length === 1 ? { lat: coords[0][1], lon: coords[0][0] } : null;
-  
-  let bestLat = coords[0][1], bestLon = coords[0][0];
-  let bestDist = Infinity;
-  
-  for (let i = 0; i < coords.length; i++) {
-    const [lon1, lat1] = coords[i];
-    const [lon2, lat2] = coords[(i + 1) % coords.length];
-    // Find closest point on segment (lon1,lat1)-(lon2,lat2) to (refLon,refLat)
-    const dx = lon2 - lon1, dy = lat2 - lat1;
-    const len2 = dx * dx + dy * dy;
-    let t = len2 === 0 ? 0 : ((refLon - lon1) * dx + (refLat - lat1) * dy) / len2;
-    t = Math.max(0, Math.min(1, t));
-    const cLon = lon1 + t * dx, cLat = lat1 + t * dy;
-    const d = haversine(refLat, refLon, cLat, cLon);
-    if (d < bestDist) { bestDist = d; bestLat = cLat; bestLon = cLon; }
-  }
-  return { lat: bestLat, lon: bestLon };
-}
 
 async function fetchPlaces() {
   showLoading(true);
   setStatus('busy', '🔍 搜索中...');
   fetchError = null;
+  places = [];
 
   const bb = getBBox(userLat, userLon, SEARCH_RADIUS_M);
   const bbs = `${bb.south},${bb.west},${bb.north},${bb.east}`;
 
   const catKeys = Object.keys(CATS).filter(k => k !== 'all');
-  const all = [];
-  let ok = 0, fail = 0;
-  let lastError = null;
+  const results = {};  // cat → places[]
 
-  for (const cat of catKeys) {
+  // ====== Phase 1: fire all 6 categories in parallel (6x faster than serial) ======
+  const tasks = catKeys.map(async (cat) => {
     try {
       const query = CATS[cat].q(bbs);
       const data = await overpassQuery(query);
+      const items = [];
       if (data && data.elements) {
         data.elements.forEach(el => {
-          // Use closest polygon boundary point for irregular shapes (out geom),
-          // direct coordinates for nodes, center for ways without geometry.
-          let rawLat, rawLon;
-          if (el.type === 'node') {
-            rawLat = el.lat; rawLon = el.lon;
-          } else if (el.geometry && el.center) {
-            const pt = closestOnGeometry(el.geometry, userLat, userLon);
-            rawLat = pt ? pt.lat : el.center.lat;
-            rawLon = pt ? pt.lon : el.center.lon;
-          } else {
-            rawLat = el.center?.lat; rawLon = el.center?.lon;
-          }
-          if (!rawLat || !rawLon) return;
+          const lat = el.lat || el.center?.lat;
+          const lon = el.lon || el.center?.lon;
+          if (!lat || !lon) return;
           const name = el.tags?.name || el.tags?.['name:zh'] ||
                        el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
-          // WGS-84 → GCJ-02 坐标转换
-          const gcjP = wgs84ToGcj02(rawLon, rawLat);
-          all.push({
-            id: el.type + el.id, lat: gcjP.lat, lon: gcjP.lon, cat,
-            name: name,
-            tags: el.tags || {},
+          const gcj = wgs84ToGcj02(lon, lat);
+          items.push({
+            id: el.type + el.id, lat: gcj.lat, lon: gcj.lon, cat,
+            name: name, tags: el.tags || {},
           });
         });
       }
-      ok++;
+      results[cat] = items;
+      // Progressive: show results as each category finishes
+      setStatus('busy', `🔍 已发现 ${Object.values(results).flat().length} 个地点...`);
+      mergeAndShow();
     } catch (e) {
-      fail++;
-      lastError = e.message;
       console.warn(`[${cat}] 失败:`, e.message);
     }
-  }
+  });
 
-  // Deduplicate & compute distances
-  const seen = new Set();
-  places = all.filter(p => seen.has(p.id) ? false : seen.add(p.id));
-  places.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
-  places.sort((a, b) => a.dist - b.dist);
-
+  await Promise.allSettled(tasks);
   showLoading(false);
 
   if (places.length > 0) {
-    // Success — real data from OSM
     setStatus('ok', '✅ ' + places.length + '个地点');
-  } else if (ok === 0 && fail > 0) {
-    // All categories failed — network / CORS issue
-    fetchError = `数据服务连接失败（${fail}类请求均失败）`;
-    setStatus('err', '⚠️ 服务不可用');
-  } else if (ok > 0 && places.length === 0) {
-    // API worked but no results — try larger radius
-    fetchError = null;
-    const bb2 = getBBox(userLat, userLon, FALLBACK_RADIUS_M);
-    const bbs2 = `${bb2.south},${bb2.west},${bb2.north},${bb2.east}`;
-    const retryAll = [];
-    let retryOk = 0;
-    for (const cat of catKeys) {
-      try {
-        const query = CATS[cat].q(bbs2);
-        const data = await overpassQuery(query);
-        if (data && data.elements) {
-          data.elements.forEach(el => {
-            // Use closest polygon boundary point for irregular shapes
-            let rawLat, rawLon;
-            if (el.type === 'node') {
-              rawLat = el.lat; rawLon = el.lon;
-            } else if (el.geometry && el.center) {
-              const pt = closestOnGeometry(el.geometry, userLat, userLon);
-              rawLat = pt ? pt.lat : el.center.lat;
-              rawLon = pt ? pt.lon : el.center.lon;
-            } else {
-              rawLat = el.center?.lat; rawLon = el.center?.lon;
-            }
-            if (!rawLat || !rawLon) return;
-            const name = el.tags?.name || el.tags?.['name:zh'] ||
-                         el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
-            const gcjR = wgs84ToGcj02(rawLon, rawLat);
-            retryAll.push({
-              id: el.type + el.id, lat: gcjR.lat, lon: gcjR.lon, cat,
-              name: name,
-              tags: el.tags || {},
-            });
-          });
-        }
-        retryOk++;
-      } catch (e) { /* ignore */ }
-    }
-    const seen2 = new Set();
-    const retryPlaces = retryAll.filter(p => seen2.has(p.id) ? false : seen2.add(p.id));
-    retryPlaces.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
-    retryPlaces.sort((a, b) => a.dist - b.dist);
-
-    if (retryPlaces.length > 0) {
-      places = retryPlaces;
-      setStatus('ok', '✅ ' + places.length + '个地点（扩大范围）');
-    } else {
-      setStatus('err', '⚠️ 周边暂无');
-      fetchError = '该区域暂无收录的遛娃地点，请尝试移动到城市中心区域。';
-    }
-  } else {
-    // ok === 0 && fail === 0 — shouldn't normally happen
-    fetchError = '暂无分类可查询';
-    setStatus('err', '⚠️ 无数据');
+    return;
   }
 
-  renderAll();
-}
+  // ====== Phase 2: all failed — retry with larger radius ======
+  setStatus('busy', '🔍 扩大范围搜索...');
+  const bb2 = getBBox(userLat, userLon, FALLBACK_RADIUS_M);
+  const bbs2 = `${bb2.south},${bb2.west},${bb2.north},${bb2.east}`;
 
+  let anyOk = false;
+  const retryTasks = catKeys.map(async (cat) => {
+    try {
+      const query = CATS[cat].q(bbs2);
+      const data = await overpassQuery(query);
+      const items = [];
+      if (data && data.elements) {
+        data.elements.forEach(el => {
+          const lat = el.lat || el.center?.lat;
+          const lon = el.lon || el.center?.lon;
+          if (!lat || !lon) return;
+          const name = el.tags?.name || el.tags?.['name:zh'] ||
+                       el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
+          const gcj = wgs84ToGcj02(lon, lat);
+          items.push({
+            id: el.type + el.id, lat: gcj.lat, lon: gcj.lon, cat,
+            name: name, tags: el.tags || {},
+          });
+        });
+      }
+      if (items.length > 0) { results[cat] = items; anyOk = true; }
+    } catch (e) { /* ignore */ }
+  });
+  await Promise.allSettled(retryTasks);
+
+  if (anyOk) {
+    mergeAndShow();
+    setStatus('ok', '✅ ' + places.length + '个地点（扩大范围）');
+  } else if (Object.keys(results).length === 0) {
+    fetchError = '数据服务连接失败，请检查网络后重试。';
+    setStatus('err', '⚠️ 服务不可用');
+    renderAll();
+  } else {
+    fetchError = '该区域暂无收录的遛娃地点，请尝试移动到城市中心区域。';
+    setStatus('err', '⚠️ 周边暂无');
+    renderAll();
+  }
+
+  // ====== Merge & render helper ======
+  function mergeAndShow() {
+    const all = [];
+    for (const c of Object.keys(results)) all.push(...results[c]);
+    // Deduplicate: node > way for same-name within 300m
+    const merged = [];
+    all.forEach(p => {
+      const dup = merged.find(ex =>
+        (p.name || '').trim() === (ex.name || '').trim() &&
+        haversine(p.lat, p.lon, ex.lat, ex.lon) < 300
+      );
+      if (dup) {
+        if (p.id.startsWith('node') && !dup.id.startsWith('node')) {
+          dup.lat = p.lat; dup.lon = p.lon; dup.id = p.id;
+        }
+      } else {
+        merged.push(p);
+      }
+    });
+    places = merged;
+    places.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
+    places.sort((a, b) => a.dist - b.dist);
+    renderAll();
+  }
+}
 async function overpassQuery(query) {
   const body = 'data=' + encodeURIComponent(query);
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
