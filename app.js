@@ -389,9 +389,14 @@ function renderAll() {
     const tg = buildTagHtml(p.cat);
     const addr2 = formatAddress(p);
     const addrLine = addr2 ? `<div style="color:#666;font-size:10px;margin-top:3px">📍 ${escHtml(addr2)}</div>` : '';
-    m.bindPopup(`<div style="font-size:13px"><b>${escHtml(p.name)}</b>
+    m.bindPopup(`<div style="font-size:13px;min-width:180px"><b>${escHtml(p.name)}</b>
       <div style="color:#666;font-size:11px;margin:2px 0">${CATS[p.cat]?.e} ${CATS[p.cat]?.l} · ${d}</div>
-      <div>${tg}</div>${addrLine}</div>`);
+      <div>${tg}</div>${addrLine}
+      <a href="${navUrl(p.name, p.lat, p.lon)}" target="_blank" style="
+        display:inline-block;margin-top:6px;padding:4px 14px;
+        background:#4CAF50;color:#fff;border-radius:14px;
+        font-size:12px;text-decoration:none;
+      ">🧭 导航到这里</a></div>`);
   });
 
   // Kick off async address lookups (throttled queue, 1/sec)
@@ -439,18 +444,35 @@ function updateDrawer(filtered) {
       const tg = buildTagHtml(p.cat);
       const addr = formatAddress(p);
       const isCoord = addr && addr.indexOf('°') > 0; // coordinate fallback
-      return '<div class="place-item" data-id="' + p.id + '" onclick="flyTo(' + p.lat + ',' + p.lon + ')">' +
-        '<div class="p-emoji">' + (CATS[p.cat]?.e || '📍') + '</div>' +
-        '<div class="p-info">' +
-          '<div class="p-name">' + escHtml(p.name) + '</div>' +
-          '<div class="p-meta">' + CATS[p.cat]?.l + ' ' + tg + '</div>' +
-          '<div class="p-addr">📍 ' + escHtml(addr) + '</div>' +
+      return '<div class="place-item" data-id="' + p.id + '">' +
+        '<div class="p-left" onclick="flyTo(' + p.lat + ',' + p.lon + ')">' +
+          '<div class="p-emoji">' + (CATS[p.cat]?.e || '📍') + '</div>' +
+          '<div class="p-info">' +
+            '<div class="p-name">' + escHtml(p.name) + '</div>' +
+            '<div class="p-meta">' + CATS[p.cat]?.l + ' ' + tg + '</div>' +
+            '<div class="p-addr">📍 ' + escHtml(addr) + '</div>' +
+          '</div>' +
+          '<div class="p-dist">' + d + '</div>' +
         '</div>' +
-        '<div class="p-dist">' + d + '</div>' +
+        '<a class="p-nav-btn" href="' + navUrl(p.name, p.lat, p.lon) + '" target="_blank" onclick="event.stopPropagation()" title="导航">🧭</a>' +
       '</div>';
     }).join('');
     openDrawer();
   }
+}
+
+// 生成各大地图导航链接（默认高德，兜底 Apple/Google）
+function navUrl(name, lat, lon) {
+  // 高德：使用 https URI 兼容所有平台
+  var gdLon = lon.toFixed(6);
+  var gdLat = lat.toFixed(6);
+  return 'https://uri.amap.com/navigation?to=' + gdLon + ',' + gdLat + ',' +
+    encodeURIComponent(name) + '&mode=car&coordinate=gaode';
+}
+
+// 点击导航按钮
+function doNav(name, lat, lon) {
+  window.open(navUrl(name, lat, lon), '_blank');
 }
 
 function flyTo(lat, lon) {
