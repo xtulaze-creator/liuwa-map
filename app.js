@@ -289,36 +289,55 @@ async function fetchPlaces() {
 
 async function overpassQuery(query) {
   const body = 'data=' + encodeURIComponent(query);
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 10000);
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
-  try {
-    // Try proxy first (no CORS issues), fallback to direct
-    let resp;
+  // All Overpass endpoints to try
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+  ];
+
+  const tryFetch = async (url, timeoutMs) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      resp = await fetch(OVERPASS_PROXY, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body,
-        signal: ctrl.signal,
-      });
-    } catch (proxyErr) {
-      // Proxy unavailable — try direct Overpass API (supports CORS)
-      console.warn('代理不可用，直连 Overpass API:', proxyErr.message);
-      resp = await fetch(OVERPASS_DIRECT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body,
-        signal: ctrl.signal,
-      });
+      const resp = await fetch(url, { method: 'POST', headers, body, signal: ctrl.signal });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp;
+    } finally {
+      clearTimeout(t);
     }
+  };
 
-    clearTimeout(t);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    return await resp.json();
-  } finally {
-    clearTimeout(t);
+  // Phase 1: Race all endpoints + proxy, fastest wins
+  const promises = endpoints.map(url => tryFetch(url, 8000));
+  if (window.location.protocol !== 'file:') {
+    promises.push(tryFetch(OVERPASS_PROXY, 3000).catch(() => null));
   }
+
+  // Wait for the first successful response
+  // We use a manual race since Promise.any might not handle null properly
+  const results = await Promise.allSettled(promises);
+  const firstOk = results.find(r => r.status === 'fulfilled' && r.value && r.value !== null);
+  if (firstOk) return await firstOk.value.json();
+
+  // Phase 2: Sequential retry with longer timeout
+  for (const url of endpoints) {
+    try {
+      const resp = await tryFetch(url, 12000);
+      return await resp.json();
+    } catch (e) {
+      console.warn('Overpass retry failed:', url, e.message);
+    }
+  }
+
+  // Phase 3: Proxy last resort
+  try {
+    const resp = await tryFetch(OVERPASS_PROXY, 15000);
+    return await resp.json();
+  } catch (e) { /* ignore */ }
+
+  throw new Error('所有数据源均不可达');
 }
 
 // ---- Render ----
