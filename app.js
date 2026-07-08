@@ -13,6 +13,48 @@ const OVERPASS_DIRECT = 'https://overpass-api.de/api/interpreter';
 const SEARCH_RADIUS_M = 5000;
 const FALLBACK_RADIUS_M = 12000;
 
+// ---- WGS-84 → GCJ-02 坐标转换 ----
+// 高德地图瓦片使用 GCJ-02（火星坐标系），而 OSM / 浏览器定位返回 WGS-84。
+// 直接标上去会有 100-700m 偏移，必须转换。
+function wgs84ToGcj02(wgsLon, wgsLat) {
+  const PI = Math.PI;
+  const a = 6378245.0;
+  const ee = 0.00669342162296594323;
+
+  if (wgsLon < 72.004 || wgsLon > 137.8347 || wgsLat < 0.8293 || wgsLat > 55.8271) {
+    // 中国境外不做转换
+    return { lat: wgsLat, lon: wgsLon };
+  }
+
+  const transformLat = (x, y) => {
+    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(y * PI) + 40.0 * Math.sin(y / 3.0 * PI)) * 2.0 / 3.0;
+    ret += (160.0 * Math.sin(y / 12.0 * PI) + 320.0 * Math.sin(y * PI / 30.0)) * 2.0 / 3.0;
+    return ret;
+  };
+
+  const transformLon = (x, y) => {
+    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(x * PI) + 40.0 * Math.sin(x / 3.0 * PI)) * 2.0 / 3.0;
+    ret += (150.0 * Math.sin(x / 12.0 * PI) + 300.0 * Math.sin(x / 20.0 * PI)) * 2.0 / 3.0;
+    return ret;
+  };
+
+  const dLat = transformLat(wgsLon - 105.0, wgsLat - 35.0);
+  const dLon = transformLon(wgsLon - 105.0, wgsLat - 35.0);
+  const radLat = wgsLat / 180.0 * PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - ee * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  const dLatOut = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * PI);
+  const dLonOut = (dLon * 180.0) / (a / sqrtMagic * Math.cos(radLat) * PI);
+
+  return { lat: wgsLat + dLatOut, lon: wgsLon + dLonOut };
+}
+
+
 // ---- Category Definitions ----
 const CATS = {
   all: { l: '全部', e: '🗺️' },
@@ -130,13 +172,16 @@ function useDefaultLocation() {
 function onReady() {
   document.getElementById('btnLocate').classList.remove('locating');
 
+  // WGS-84 → GCJ-02，与高德瓦片对齐
+  const gcj = wgs84ToGcj02(userLon, userLat);
+
   if (userMarker) map.removeLayer(userMarker);
-  userMarker = L.circleMarker([userLat, userLon], {
+  userMarker = L.circleMarker([gcj.lat, gcj.lon], {
     radius: 9, fillColor: '#2196F3', fillOpacity: 1,
     color: '#fff', weight: 3
   }).addTo(map).bindPopup('<b>📍 我的位置</b>').openPopup();
 
-  map.setView([userLat, userLon], 14, { animate: true });
+  map.setView([gcj.lat, gcj.lon], 14, { animate: true });
   fetchWeather();
   fetchPlaces();
 }
@@ -208,8 +253,10 @@ async function fetchPlaces() {
           if (!lat || !lon) return;
           const name = el.tags?.name || el.tags?.['name:zh'] ||
                        el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
+          // WGS-84 → GCJ-02 坐标转换
+          const gcjP = wgs84ToGcj02(lon, lat);
           all.push({
-            id: el.type + el.id, lat, lon, cat,
+            id: el.type + el.id, lat: gcjP.lat, lon: gcjP.lon, cat,
             name: name,
             tags: el.tags || {},
           });
@@ -256,8 +303,9 @@ async function fetchPlaces() {
             if (!lat || !lon) return;
             const name = el.tags?.name || el.tags?.['name:zh'] ||
                          el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
+            const gcjR = wgs84ToGcj02(lon, lat);
             retryAll.push({
-              id: el.type + el.id, lat, lon, cat,
+              id: el.type + el.id, lat: gcjR.lat, lon: gcjR.lon, cat,
               name: name,
               tags: el.tags || {},
             });
