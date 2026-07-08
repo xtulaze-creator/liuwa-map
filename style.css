@@ -216,3 +216,7 @@ body {
   margin-top: 2px; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
+
+.p-addr-coord {
+  color: #bbb; font-style: italic;
+}

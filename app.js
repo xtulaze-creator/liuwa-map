@@ -477,13 +477,13 @@ function updateDrawer(filtered) {
       const d = formatDistance(p.dist);
       const tg = buildTagHtml(p.cat);
       const addr = formatAddress(p.tags, p.lat, p.lon);
-      const addrText = addr ? escHtml(addr) : '';
+      const isCoord = addr && addr.indexOf('°') > 0; // coordinate fallback
       return '<div class="place-item" data-id="' + p.id + '" onclick="flyTo(' + p.lat + ',' + p.lon + ')">' +
         '<div class="p-emoji">' + (CATS[p.cat]?.e || '📍') + '</div>' +
         '<div class="p-info">' +
           '<div class="p-name">' + escHtml(p.name) + '</div>' +
           '<div class="p-meta">' + CATS[p.cat]?.l + ' ' + tg + '</div>' +
-          '<div class="p-addr" style="' + (addrText ? '' : 'display:none') + '">' + (addrText ? '📍 ' + addrText : '') + '</div>' +
+          '<div class="p-addr' + (isCoord ? ' p-addr-coord' : '') + '">📍 ' + escHtml(addr) + '</div>' +
         '</div>' +
         '<div class="p-dist">' + d + '</div>' +
       '</div>';
@@ -554,10 +554,10 @@ var _addrQueue = [];
 var _addrTimer = null;
 
 function enqueueAddress(p) {
-  if (cachedAddress(p.lat, p.lon)) return; // 已有缓存
+  if (cachedAddress(p.lat, p.lon)) return;
   var key = p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
-  if (_addrCache[key] !== undefined) return; // 已请求过
-  _addrCache[key] = null; // 标记为请求中
+  if (_addrCache[key] !== undefined) return; // already queued/done/failed
+  _addrCache[key] = null;
   _addrQueue.push(p);
   if (!_addrTimer) flushQueue();
 }
@@ -576,18 +576,16 @@ function flushQueue() {
   fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'LiuwaMap/1.0' } })
     .then(function(resp) { clearTimeout(t); return resp.ok ? resp.json() : Promise.reject(); })
     .then(function(data) {
-      var addr = data.display_name || '';
-      addr = addr.replace(/,?\s*\d{6}/g, '').replace(/，?\s*\d{6}/g, '');
+      var addr = (data.display_name || '').replace(/,?\s*\d{6}/g, '').replace(/，?\s*\d{6}/g, '');
       var parts = addr.split(',');
       if (parts.length > 4) parts = parts.slice(0, 4);
       addr = parts.join(',').replace(/^,\s*/, '').trim();
-      _addrCache[key] = addr;
-      // 更新抽屉：只更新地址文字，不用重渲染
-      updateAddressText(p, addr);
+      _addrCache[key] = addr || '___empty___';
+      if (addr) updateAddressText(p, addr);
     }).catch(function() {
-      _addrCache[key] = '';
+      _addrCache[key] = '___empty___'; // mark as tried-and-failed
     }).finally(function() {
-      _addrTimer = setTimeout(flushQueue, 1200); // 1.2s 间隔
+      _addrTimer = setTimeout(flushQueue, 1200);
     });
 }
 
@@ -599,8 +597,9 @@ function updateAddressText(p, addr) {
     var item = items[i];
     var addrEl = item.querySelector('.p-addr');
     if (addrEl && item.getAttribute('data-id') === target) {
+      // textContent auto-escapes, no XSS risk
       addrEl.textContent = '📍 ' + addr;
-      addrEl.style.display = '';
+      addrEl.classList.remove('p-addr-coord');
       break;
     }
   }
@@ -609,10 +608,20 @@ function updateAddressText(p, addr) {
 // 同步版本：从缓存拿（如果还没加载完就返回空，避免阻塞渲染）
 function cachedAddress(lat, lon) {
   var key = lat.toFixed(4) + ',' + lon.toFixed(4);
-  return _addrCache[key] || '';
+  var v = _addrCache[key];
+  // null=loading, '___empty___'=tried and failed, otherwise=valid address
+  if (!v || v === '___empty___') return '';
+  return v;
 }
 
-// OSM tags 中提取地址（优先用 tags，兜底用逆地理缓存）
+// 坐标格式化为 "31.23°N, 121.47°E" 作为兜底地址
+function coordAddress(lat, lon) {
+  var ns = lat >= 0 ? 'N' : 'S';
+  var ew = lon >= 0 ? 'E' : 'W';
+  return Math.abs(lat).toFixed(4) + '°' + ns + ', ' + Math.abs(lon).toFixed(4) + '°' + ew;
+}
+
+// 提取地址：OSM tags → 逆地理缓存 → 坐标兜底（保证始终有内容）
 function formatAddress(tags, lat, lon) {
   var city = tags['addr:city'] || tags['city'] || '';
   var dist = tags['addr:district'] || tags['district'] || tags['addr:suburb'] || tags['addr:county'] || '';
@@ -627,8 +636,12 @@ function formatAddress(tags, lat, lon) {
     return p.join('');
   }
 
-  // Fallback: check cached reverse-geocoded address
-  return cachedAddress(lat, lon);
+  // Prefer cached reverse-geocoded address over raw coordinates
+  var cached = cachedAddress(lat, lon);
+  if (cached) return cached;
+
+  // Absolute fallback: always show coordinates
+  return coordAddress(lat, lon);
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
