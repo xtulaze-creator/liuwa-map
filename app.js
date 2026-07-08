@@ -5,9 +5,10 @@ let userLat, userLon;
 let currentCat = 'all';
 let places = [];
 let weatherData = null;
+let fetchError = null;
 
 // ---- Configuration ----
-const OVERPASS_PROXY = '/api/overpass';   // use proxy to avoid CORS
+const OVERPASS_PROXY = '/api/overpass';
 const OVERPASS_DIRECT = 'https://overpass-api.de/api/interpreter';
 const SEARCH_RADIUS_M = 5000;
 const FALLBACK_RADIUS_M = 12000;
@@ -29,7 +30,6 @@ const CATS = {
   },
   mall: {
     l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],
-    // Fixed: shop=mall is rare in OSM; use building=retail + landuse=retail + shop=mall
     q: (bb) => `[out:json][timeout:10];(node["shop"="mall"](${bb});way["shop"="mall"](${bb});way["building"="retail"](${bb});way["landuse"="retail"](${bb}););out center 30;`
   },
   library: {
@@ -103,6 +103,7 @@ function locate() {
   btn.classList.add('locating');
   showLoading(true);
   setStatus('busy', '🔍 定位中...');
+  fetchError = null;
 
   if (!navigator.geolocation) {
     useDefaultLocation();
@@ -153,7 +154,7 @@ async function fetchWeather() {
     const w = weatherData;
     const advice = weatherAdvice(w.weathercode, w.temperature);
     card.innerHTML = `<span class="temp">${Math.round(w.temperature)}°</span>
-      <span class="desc" title="${advice}">${weatherText(w.weathercode)} ${Math.round(w.windspeed)}km/h</span>`;
+      <span class="desc" title="${escHtml(advice)}">${weatherText(w.weathercode)} ${Math.round(w.windspeed)}km/h</span>`;
   } catch (e) {
     card.innerHTML = `<span class="temp">--°</span><span class="desc">天气不可用</span>`;
     console.warn('Weather fetch failed:', e.message);
@@ -186,6 +187,7 @@ function weatherAdvice(code, temp) {
 async function fetchPlaces() {
   showLoading(true);
   setStatus('busy', '🔍 搜索中...');
+  fetchError = null;
 
   const bb = getBBox(userLat, userLon, SEARCH_RADIUS_M);
   const bbs = `${bb.south},${bb.west},${bb.north},${bb.east}`;
@@ -193,6 +195,7 @@ async function fetchPlaces() {
   const catKeys = Object.keys(CATS).filter(k => k !== 'all');
   const all = [];
   let ok = 0, fail = 0;
+  let lastError = null;
 
   for (const cat of catKeys) {
     try {
@@ -215,7 +218,8 @@ async function fetchPlaces() {
       ok++;
     } catch (e) {
       fail++;
-      console.warn(`[${cat}] fail:`, e.message);
+      lastError = e.message;
+      console.warn(`[${cat}] 失败:`, e.message);
     }
   }
 
@@ -228,54 +232,56 @@ async function fetchPlaces() {
   showLoading(false);
 
   if (places.length > 0) {
+    // Success — real data from OSM
     setStatus('ok', '✅ ' + places.length + '个地点');
-  } else if (ok === 0) {
-    // All APIs failed — use demo data
-    setStatus('ok', '🔄 演示模式');
-    places = demoPlaces(userLat, userLon);
-  } else {
-    setStatus('err', '⚠️ 无结果');
-    // Expand radius and retry
+  } else if (ok === 0 && fail > 0) {
+    // All categories failed — network / CORS issue
+    fetchError = `数据服务连接失败（${fail}类请求均失败）`;
+    setStatus('err', '⚠️ 服务不可用');
+  } else if (ok > 0 && places.length === 0) {
+    // API worked but no results — try larger radius
+    fetchError = null;
     const bb2 = getBBox(userLat, userLon, FALLBACK_RADIUS_M);
     const bbs2 = `${bb2.south},${bb2.west},${bb2.north},${bb2.east}`;
-    // quick retry with larger radius
-    try {
-      const retryAll = [];
-      for (const cat of catKeys) {
-        try {
-          const query = CATS[cat].q(bbs2);
-          const data = await overpassQuery(query);
-          if (data && data.elements) {
-            data.elements.forEach(el => {
-              const lat = el.lat || el.center?.lat;
-              const lon = el.lon || el.center?.lon;
-              if (!lat || !lon) return;
-              const name = el.tags?.name || el.tags?.['name:zh'] ||
-                           el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
-              retryAll.push({
-                id: el.type + el.id, lat, lon, cat,
-                name: name,
-                tags: el.tags || {},
-              });
+    const retryAll = [];
+    let retryOk = 0;
+    for (const cat of catKeys) {
+      try {
+        const query = CATS[cat].q(bbs2);
+        const data = await overpassQuery(query);
+        if (data && data.elements) {
+          data.elements.forEach(el => {
+            const lat = el.lat || el.center?.lat;
+            const lon = el.lon || el.center?.lon;
+            if (!lat || !lon) return;
+            const name = el.tags?.name || el.tags?.['name:zh'] ||
+                         el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
+            retryAll.push({
+              id: el.type + el.id, lat, lon, cat,
+              name: name,
+              tags: el.tags || {},
             });
-          }
-        } catch (e) { /* ignore */ }
-      }
-      const seen2 = new Set();
-      const retryPlaces = retryAll.filter(p => seen2.has(p.id) ? false : seen2.add(p.id));
-      retryPlaces.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
-      retryPlaces.sort((a, b) => a.dist - b.dist);
-      if (retryPlaces.length > 0) {
-        places = retryPlaces;
-        setStatus('ok', '✅ ' + places.length + '个地点');
-      } else {
-        places = demoPlaces(userLat, userLon);
-        setStatus('ok', '🔄 演示模式');
-      }
-    } catch (e2) {
-      places = demoPlaces(userLat, userLon);
-      setStatus('ok', '🔄 演示模式');
+          });
+        }
+        retryOk++;
+      } catch (e) { /* ignore */ }
     }
+    const seen2 = new Set();
+    const retryPlaces = retryAll.filter(p => seen2.has(p.id) ? false : seen2.add(p.id));
+    retryPlaces.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
+    retryPlaces.sort((a, b) => a.dist - b.dist);
+
+    if (retryPlaces.length > 0) {
+      places = retryPlaces;
+      setStatus('ok', '✅ ' + places.length + '个地点（扩大范围）');
+    } else {
+      setStatus('err', '⚠️ 周边暂无');
+      fetchError = '该区域暂无收录的遛娃地点，请尝试移动到城市中心区域。';
+    }
+  } else {
+    // ok === 0 && fail === 0 — shouldn't normally happen
+    fetchError = '暂无分类可查询';
+    setStatus('err', '⚠️ 无数据');
   }
 
   renderAll();
@@ -297,8 +303,8 @@ async function overpassQuery(query) {
         signal: ctrl.signal,
       });
     } catch (proxyErr) {
-      // Proxy unavailable — try direct
-      console.warn('Proxy unavailable, trying direct:', proxyErr.message);
+      // Proxy unavailable — try direct Overpass API (supports CORS)
+      console.warn('代理不可用，直连 Overpass API:', proxyErr.message);
       resp = await fetch(OVERPASS_DIRECT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -313,35 +319,6 @@ async function overpassQuery(query) {
   } finally {
     clearTimeout(t);
   }
-}
-
-// ---- Demo Data (fallback) ----
-function demoPlaces(lat, lon) {
-  const demos = [
-    { lat: lat + 0.008, lon: lon + 0.006, cat: 'park', name: '人民公园' },
-    { lat: lat - 0.015, lon: lon + 0.010, cat: 'park', name: '中山公园' },
-    { lat: lat + 0.005, lon: lon - 0.008, cat: 'park', name: '静安公园' },
-    { lat: lat + 0.004, lon: lon - 0.015, cat: 'park', name: '世纪公园' },
-    { lat: lat + 0.012, lon: lon - 0.003, cat: 'playground', name: '儿童游乐场' },
-    { lat: lat - 0.010, lon: lon - 0.012, cat: 'playground', name: '欢乐谷游乐区' },
-    { lat: lat + 0.007, lon: lon + 0.014, cat: 'playground', name: '社区乐园' },
-    { lat: lat + 0.006, lon: lon + 0.012, cat: 'museum', name: '自然博物馆' },
-    { lat: lat - 0.008, lon: lon + 0.014, cat: 'museum', name: '科技馆' },
-    { lat: lat + 0.003, lon: lon - 0.018, cat: 'museum', name: '美术馆' },
-    { lat: lat + 0.004, lon: lon - 0.006, cat: 'mall', name: '恒隆广场' },
-    { lat: lat - 0.014, lon: lon - 0.004, cat: 'mall', name: '万象城' },
-    { lat: lat + 0.010, lon: lon + 0.004, cat: 'mall', name: '来福士' },
-    { lat: lat - 0.018, lon: lon + 0.008, cat: 'mall', name: '万达广场' },
-    { lat: lat - 0.006, lon: lon + 0.008, cat: 'library', name: '上海图书馆' },
-    { lat: lat + 0.015, lon: lon - 0.014, cat: 'library', name: '区图书馆' },
-    { lat: lat - 0.020, lon: lon - 0.016, cat: 'zoo', name: '上海动物园' },
-    { lat: lat + 0.025, lon: lon - 0.020, cat: 'zoo', name: '野生动物园' },
-    { lat: lat - 0.012, lon: lon + 0.020, cat: 'zoo', name: '海洋水族馆' },
-  ];
-  return demos.map((d, i) => ({
-    ...d, id: 'demo' + i,
-    tags: {}, dist: haversine(lat, lon, d.lat, d.lon),
-  }));
 }
 
 // ---- Render ----
@@ -391,7 +368,22 @@ function updateDrawer(filtered) {
   if (filtered.length === 0) {
     list.innerHTML = '';
     empty.style.display = 'block';
-    emptyMsg.textContent = places.length === 0 ? '正在加载...' : '该分类暂无地点';
+
+    if (fetchError) {
+      // API failure — show error with retry button
+      emptyMsg.innerHTML = `${fetchError}<br><br>
+        <button onclick="locate()" style="
+          padding:8px 20px;border-radius:16px;border:none;
+          background:#4CAF50;color:#fff;font-size:13px;cursor:pointer;
+          box-shadow:0 2px 8px rgba(76,175,80,0.3);
+        ">🔄 重新加载</button>`;
+    } else if (places.length === 0 && !fetchError) {
+      // Still loading
+      emptyMsg.textContent = '正在加载周边地点...';
+    } else {
+      // Places exist but filtered to zero
+      emptyMsg.textContent = '该分类暂无地点';
+    }
   } else {
     empty.style.display = 'none';
     list.innerHTML = filtered.map(p => {
