@@ -5,6 +5,7 @@ let userLat, userLon;
 let currentCat = 'all';
 let places = [];
 let weatherData = null;
+let emergencyPlaces = {};
 let fetchError = null;
 
 // ---- Configuration ----
@@ -227,7 +228,6 @@ function weatherAdvice(code, temp) {
 async function fetchEmergency(cat) {
   showLoading(true);
   setStatus('busy', '🔍 搜索中...');
-  places = [];
 
   var gcjCenter = wgs84ToGcj02(userLon, userLat);
   var locStr = gcjCenter.lon.toFixed(6) + ',' + gcjCenter.lat.toFixed(6);
@@ -242,14 +242,16 @@ async function fetchEmergency(cat) {
         var k = p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
         if (!seen[k]) { seen[k] = true; merged.push(p); }
       });
-      places = merged;
-      places.forEach(function(p) { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
-      places.sort(function(a, b) { return a.dist - b.dist; });
-      setStatus('ok', '✅ ' + places.length + '个' + CATS[cat].l);
+      emergencyPlaces[cat] = merged;
+      emergencyPlaces[cat].forEach(function(p) { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
+      emergencyPlaces[cat].sort(function(a, b) { return a.dist - b.dist; });
+      setStatus('ok', '✅ ' + emergencyPlaces[cat].length + '个' + CATS[cat].l);
     } else {
+      emergencyPlaces[cat] = [];
       setStatus('ok', '⚠️ 周边暂无');
     }
   } catch(e) {
+    emergencyPlaces[cat] = [];
     setStatus('err', '⚠️ 请求失败');
   }
   showLoading(false);
@@ -408,9 +410,11 @@ function parseAmapResults(data) {
 
 // ---- Render ----
 function renderAll() {
-  const filtered = currentCat === 'all'
-    ? places
-    : places.filter(p => p.cat === currentCat);
+  var isEmerg = currentCat === "nursery" || currentCat === "hospital" || currentCat === "babyShop";
+  var source = isEmerg ? (emergencyPlaces[currentCat] || []) : places;
+    var filtered = currentCat === "all"
+    ? source
+    : source.filter(function(p) { return p.cat === currentCat; });
 
   placeGroup.clearLayers();
   const top = filtered.slice(0, 40);
