@@ -56,13 +56,16 @@ function wgs84ToGcj02(wgsLon, wgsLat) {
 
 // ---- Category Definitions ----
 const CATS = {
-  all: { l: '全部', e: '🗺️' },
-  park:       { l: '公园绿地', e: '🌳', t: ['outdoor'],          types: '公园' },
-  playground: { l: '游乐场',   e: '🛝', t: ['outdoor'],          types: '游乐场|游乐园|儿童乐园', keywords: '游乐场|儿童乐园|亲子乐园' },
-  museum:     { l: '博物馆',   e: '🏛️', t: ['ac', 'indoor'],    types: '博物馆' },
-  mall:       { l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],    types: '购物中心|商场', keywords: '商场|购物中心|百货' },
-  library:    { l: '图书馆',   e: '📚', t: ['ac', 'indoor'],    types: '图书馆' },
-  zoo:        { l: '动物园',   e: '🐼', t: ['outdoor','activity'], types: '动物园|水族馆|海洋馆', keywords: '动物园|海洋馆|水族馆' },
+  all: { l: '全部', e: '🗺️', keywords: '' },
+  park:       { l: '公园绿地', e: '🌳', t: ['outdoor'],          keywords: '公园' },
+  playground: { l: '游乐场',   e: '🛝', t: ['outdoor'],          keywords: '游乐场|儿童乐园|亲子乐园' },
+  museum:     { l: '博物馆',   e: '🏛️', t: ['ac', 'indoor'],    keywords: '博物馆' },
+  mall:       { l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],    keywords: '商场|购物中心|百货' },
+  library:    { l: '图书馆',   e: '📚', t: ['ac', 'indoor'],    keywords: '图书馆' },
+  zoo:        { l: '动物园',   e: '🐼', t: ['outdoor','activity'], keywords: '动物园|海洋馆|水族馆' },
+  nursery:    { l: '母婴室',   e: '👶', t: ['indoor','ac'],      keywords: '母婴室|哺乳室' },
+  hospital:   { l: '医院',     e: '🏥', t: ['indoor'],           keywords: '妇幼保健院|儿童医院' },
+  babyShop:   { l: '母婴用品', e: '🍼', t: ['indoor'],           keywords: '母婴店|母婴用品|婴儿用品' },
 };
 
 // ---- Init ----
@@ -321,7 +324,7 @@ async function fetchPlaces() {
 }
 
 async function fetchAmapPOI(cat, locStr, radius) {
-  var kw = CATS[cat].keywords;
+  var kw = CATS[cat].keywords || '';
   var params = [
     'key=' + AMAP_KEY,
     'location=' + locStr,
