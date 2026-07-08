@@ -58,11 +58,11 @@ function wgs84ToGcj02(wgsLon, wgsLat) {
 const CATS = {
   all: { l: '全部', e: '🗺️' },
   park:       { l: '公园绿地', e: '🌳', t: ['outdoor'],          types: '公园' },
-  playground: { l: '游乐场',   e: '🛝', t: ['outdoor'],          types: '游乐场|游乐园|儿童乐园' },
+  playground: { l: '游乐场',   e: '🛝', t: ['outdoor'],          types: '游乐场|游乐园|儿童乐园', keywords: '游乐场|儿童乐园|亲子乐园' },
   museum:     { l: '博物馆',   e: '🏛️', t: ['ac', 'indoor'],    types: '博物馆' },
-  mall:       { l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],    types: '购物中心|商场' },
+  mall:       { l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],    types: '购物中心|商场', keywords: '商场|购物中心|百货' },
   library:    { l: '图书馆',   e: '📚', t: ['ac', 'indoor'],    types: '图书馆' },
-  zoo:        { l: '动物园',   e: '🐼', t: ['outdoor','activity'], types: '动物园|水族馆|海洋馆' },
+  zoo:        { l: '动物园',   e: '🐼', t: ['outdoor','activity'], types: '动物园|水族馆|海洋馆', keywords: '动物园|海洋馆|水族馆' },
 };
 
 // ---- Init ----
