@@ -338,7 +338,7 @@ async function fetchAmapPOI(cat, locStr, radius) {
   // Try direct fetch first (works through proxy, or if Amap adds CORS)
   try {
     var ctrl = new AbortController();
-    var t = setTimeout(function() { ctrl.abort(); }, 15000);
+    var t = setTimeout(function() { ctrl.abort(); }, 3000);
     var resp = await fetch(url, { signal: ctrl.signal });
     clearTimeout(t);
     if (resp.ok) {
@@ -376,7 +376,7 @@ async function fetchAmapPOI(cat, locStr, radius) {
     };
 
     var script = document.createElement('script');
-    script.src = url + '&callback=' + cbName;
+    script.src = url.replace('output=json', 'output=JSONP') + '&callback=' + cbName;
     script.onerror = function() {
       if (!timedOut) { cleanup(); resolve([]); }
     };
