@@ -573,7 +573,7 @@ function flushQueue() {
   var ctrl = new AbortController();
   var t = setTimeout(function() { ctrl.abort(); }, 5000);
 
-  fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'LiuwaMap/1.0' } })
+  fetch(url, { signal: ctrl.signal })
     .then(function(resp) { clearTimeout(t); return resp.ok ? resp.json() : Promise.reject(); })
     .then(function(data) {
       var addr = (data.display_name || '').replace(/,?\s*\d{6}/g, '').replace(/，?\s*\d{6}/g, '');
@@ -582,8 +582,9 @@ function flushQueue() {
       addr = parts.join(',').replace(/^,\s*/, '').trim();
       _addrCache[key] = addr || '___empty___';
       if (addr) updateAddressText(p, addr);
-    }).catch(function() {
-      _addrCache[key] = '___empty___'; // mark as tried-and-failed
+    }).catch(function(e) {
+      console.warn('Nominatim failed for ' + key + ':', e && e.message);
+      _addrCache[key] = '___empty___';
     }).finally(function() {
       _addrTimer = setTimeout(flushQueue, 1200);
     });
