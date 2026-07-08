@@ -210,3 +210,9 @@ body {
   }
   #drawer.open { transform: translateX(0); }
 }
+
+.p-addr {
+  font-size: 10px; color: #999;
+  margin-top: 2px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}

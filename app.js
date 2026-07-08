@@ -425,9 +425,11 @@ function renderAll() {
 
     const d = formatDistance(p.dist);
     const tg = buildTagHtml(p.cat);
+    const addr2 = formatAddress(p.tags, p.lat, p.lon);
+    const addrLine = addr2 ? `<div style="color:#666;font-size:10px;margin-top:3px">📍 ${escHtml(addr2)}</div>` : '';
     m.bindPopup(`<div style="font-size:13px"><b>${escHtml(p.name)}</b>
       <div style="color:#666;font-size:11px;margin:2px 0">${CATS[p.cat]?.e} ${CATS[p.cat]?.l} · ${d}</div>
-      <div>${tg}</div></div>`);
+      <div>${tg}</div>${addrLine}</div>`);
   });
 
   updateDrawer(top);
@@ -469,11 +471,14 @@ function updateDrawer(filtered) {
     list.innerHTML = filtered.map(p => {
       const d = formatDistance(p.dist);
       const tg = buildTagHtml(p.cat);
+      const addr = formatAddress(p.tags, p.lat, p.lon);
+      const addrHtml = addr ? `<div class="p-addr">📍 ${escHtml(addr)}</div>` : '';
       return `<div class="place-item" onclick="flyTo(${p.lat},${p.lon})">
         <div class="p-emoji">${CATS[p.cat]?.e || '📍'}</div>
         <div class="p-info">
           <div class="p-name">${escHtml(p.name)}</div>
           <div class="p-meta">${CATS[p.cat]?.l} ${tg}</div>
+          ${addrHtml}
         </div>
         <div class="p-dist">${d}</div>
       </div>`;
@@ -534,6 +539,25 @@ function getBBox(lat, lon, radiusM) {
     west:  (lon - dLon).toFixed(6),
     east:  (lon + dLon).toFixed(6),
   };
+}
+
+// OSM tags 中提取地址：addr:city / addr:district / addr:street
+function formatAddress(tags, lat, lon) {
+  const prov = tags['addr:province'] || tags['province'] || '';
+  const city = tags['addr:city'] || tags['city'] || '';
+  const dist = tags['addr:district'] || tags['district'] || tags['addr:suburb'] || tags['addr:county'] || '';
+  const street = tags['addr:street'] || tags['street'] || '';
+  const hn = tags['addr:housenumber'] || '';
+  if (city || dist || street) {
+    const p = [];
+    if (prov && prov !== city) p.push(prov);
+    if (city) p.push(city.endsWith('市') ? city : city + '市');
+    if (dist) p.push(dist);
+    if (street) p.push(street + (hn ? hn + '号' : ''));
+    return p.join('');
+  }
+  var isIn = tags['is_in:city'] || tags['is_in:province'] || tags['is_in'];
+  return isIn || '';
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
