@@ -60,11 +60,11 @@ const CATS = {
   all: { l: '全部', e: '🗺️' },
   park: {
     l: '公园绿地', e: '🌳', t: ['outdoor'],
-    q: (bb) => `[out:json][timeout:10];(node["leisure"="park"](${bb});way["leisure"="park"](${bb});node["leisure"="garden"](${bb});node["leisure"="nature_reserve"](${bb}););out center 30;`
+    q: (bb) => `[out:json][timeout:10];(node["leisure"="park"](${bb});way["leisure"="park"](${bb});node["leisure"="garden"](${bb});way["leisure"="garden"](${bb});node["leisure"="nature_reserve"](${bb});way["leisure"="nature_reserve"](${bb}););out center;out geom;`
   },
   playground: {
     l: '游乐场', e: '🛝', t: ['outdoor'],
-    q: (bb) => `[out:json][timeout:10];(node["leisure"="playground"](${bb});way["leisure"="playground"](${bb}););out center 30;`
+    q: (bb) => `[out:json][timeout:10];(node["leisure"="playground"](${bb});way["leisure"="playground"](${bb}););out center;out geom;`
   },
   museum: {
     l: '博物馆', e: '🏛️', t: ['ac', 'indoor'],
@@ -80,7 +80,7 @@ const CATS = {
   },
   zoo: {
     l: '动物园', e: '🐼', t: ['outdoor', 'activity'],
-    q: (bb) => `[out:json][timeout:10];(node["tourism"="zoo"](${bb});way["tourism"="zoo"](${bb});node["tourism"="aquarium"](${bb}););out center 30;`
+    q: (bb) => `[out:json][timeout:10];(node["tourism"="zoo"](${bb});way["tourism"="zoo"](${bb});node["tourism"="aquarium"](${bb}));out center;out geom;`
   },
 };
 
@@ -229,6 +229,51 @@ function weatherAdvice(code, temp) {
 }
 
 // ---- Places Search ----
+
+// Given an OSM way geometry (array of [lat, lon] pairs from out geom),
+// find the closest point on the polygon boundary to (refLat, refLon).
+// Returns {lat, lon} — a point guaranteed to be on the polygon.
+function closestOnGeometry(geom, refLat, refLon) {
+  if (!geom || !geom.length) return null;
+  const coords = [];
+  // Flatten OSM geometry: handles Polygon and MultiPolygon formats
+  const walk = (arr) => {
+    if (!arr || !arr.length) return;
+    if (typeof arr[0] === 'number') {
+      coords.push(arr);  // [lon, lat] pair
+      return;
+    }
+    // Nested array: could be a ring or multi-polygon
+    for (const sub of arr) {
+      if (sub && sub.length && typeof sub[0] === 'number') {
+        coords.push(sub);
+      } else if (sub) {
+        walk(sub);
+      }
+    }
+  };
+  walk(geom);
+  
+  if (coords.length < 2) return coords.length === 1 ? { lat: coords[0][1], lon: coords[0][0] } : null;
+  
+  let bestLat = coords[0][1], bestLon = coords[0][0];
+  let bestDist = Infinity;
+  
+  for (let i = 0; i < coords.length; i++) {
+    const [lon1, lat1] = coords[i];
+    const [lon2, lat2] = coords[(i + 1) % coords.length];
+    // Find closest point on segment (lon1,lat1)-(lon2,lat2) to (refLon,refLat)
+    const dx = lon2 - lon1, dy = lat2 - lat1;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 === 0 ? 0 : ((refLon - lon1) * dx + (refLat - lat1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cLon = lon1 + t * dx, cLat = lat1 + t * dy;
+    const d = haversine(refLat, refLon, cLat, cLon);
+    if (d < bestDist) { bestDist = d; bestLat = cLat; bestLon = cLon; }
+  }
+  return { lat: bestLat, lon: bestLon };
+}
+
 async function fetchPlaces() {
   showLoading(true);
   setStatus('busy', '🔍 搜索中...');
@@ -248,13 +293,23 @@ async function fetchPlaces() {
       const data = await overpassQuery(query);
       if (data && data.elements) {
         data.elements.forEach(el => {
-          const lat = el.lat || el.center?.lat;
-          const lon = el.lon || el.center?.lon;
-          if (!lat || !lon) return;
+          // Use closest polygon boundary point for irregular shapes (out geom),
+          // direct coordinates for nodes, center for ways without geometry.
+          let rawLat, rawLon;
+          if (el.type === 'node') {
+            rawLat = el.lat; rawLon = el.lon;
+          } else if (el.geometry && el.center) {
+            const pt = closestOnGeometry(el.geometry, userLat, userLon);
+            rawLat = pt ? pt.lat : el.center.lat;
+            rawLon = pt ? pt.lon : el.center.lon;
+          } else {
+            rawLat = el.center?.lat; rawLon = el.center?.lon;
+          }
+          if (!rawLat || !rawLon) return;
           const name = el.tags?.name || el.tags?.['name:zh'] ||
                        el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
           // WGS-84 → GCJ-02 坐标转换
-          const gcjP = wgs84ToGcj02(lon, lat);
+          const gcjP = wgs84ToGcj02(rawLon, rawLat);
           all.push({
             id: el.type + el.id, lat: gcjP.lat, lon: gcjP.lon, cat,
             name: name,
@@ -298,12 +353,21 @@ async function fetchPlaces() {
         const data = await overpassQuery(query);
         if (data && data.elements) {
           data.elements.forEach(el => {
-            const lat = el.lat || el.center?.lat;
-            const lon = el.lon || el.center?.lon;
-            if (!lat || !lon) return;
+            // Use closest polygon boundary point for irregular shapes
+            let rawLat, rawLon;
+            if (el.type === 'node') {
+              rawLat = el.lat; rawLon = el.lon;
+            } else if (el.geometry && el.center) {
+              const pt = closestOnGeometry(el.geometry, userLat, userLon);
+              rawLat = pt ? pt.lat : el.center.lat;
+              rawLon = pt ? pt.lon : el.center.lon;
+            } else {
+              rawLat = el.center?.lat; rawLon = el.center?.lon;
+            }
+            if (!rawLat || !rawLon) return;
             const name = el.tags?.name || el.tags?.['name:zh'] ||
                          el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
-            const gcjR = wgs84ToGcj02(lon, lat);
+            const gcjR = wgs84ToGcj02(rawLon, rawLat);
             retryAll.push({
               id: el.type + el.id, lat: gcjR.lat, lon: gcjR.lon, cat,
               name: name,
