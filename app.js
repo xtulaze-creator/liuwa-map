@@ -8,8 +8,7 @@ let weatherData = null;
 let fetchError = null;
 
 // ---- Configuration ----
-const OVERPASS_PROXY = '/api/overpass';
-const OVERPASS_DIRECT = 'https://overpass-api.de/api/interpreter';
+const AMAP_KEY = '9b01248f8dc66dfd7c5df913904bae4f';
 const SEARCH_RADIUS_M = 5000;
 const FALLBACK_RADIUS_M = 12000;
 
@@ -58,32 +57,15 @@ function wgs84ToGcj02(wgsLon, wgsLat) {
 // ---- Category Definitions ----
 const CATS = {
   all: { l: '全部', e: '🗺️' },
-  park: {
-    l: '公园绿地', e: '🌳', t: ['outdoor'],
-    q: (bb) => `[out:json][timeout:10];(node["leisure"="park"](${bb});way["leisure"="park"](${bb});node["leisure"="garden"](${bb});way["leisure"="garden"](${bb});node["leisure"="nature_reserve"](${bb});way["leisure"="nature_reserve"](${bb}););out center 30;`
-  },
-  playground: {
-    l: '游乐场', e: '🛝', t: ['outdoor'],
-    q: (bb) => `[out:json][timeout:10];(node["leisure"="playground"](${bb});way["leisure"="playground"](${bb}););out center 30;`
-  },
-  museum: {
-    l: '博物馆', e: '🏛️', t: ['ac', 'indoor'],
-    q: (bb) => `[out:json][timeout:10];(node["tourism"="museum"](${bb});way["tourism"="museum"](${bb});node["tourism"="gallery"](${bb}););out center 30;`
-  },
-  mall: {
-    l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],
-    q: (bb) => `[out:json][timeout:10];(node["shop"="mall"](${bb});way["shop"="mall"](${bb});way["building"="retail"](${bb});way["landuse"="retail"](${bb}););out center 30;`
-  },
-  library: {
-    l: '图书馆', e: '📚', t: ['ac', 'indoor'],
-    q: (bb) => `[out:json][timeout:10];(node["amenity"="library"](${bb});way["amenity"="library"](${bb}););out center 30;`
-  },
-  zoo: {
-    l: '动物园', e: '🐼', t: ['outdoor', 'activity'],
-    q: (bb) => `[out:json][timeout:10];(node["tourism"="zoo"](${bb});way["tourism"="zoo"](${bb});node["tourism"="aquarium"](${bb}));out center 30;`
-  },
+  park:       { l: '公园绿地', e: '🌳', t: ['outdoor'],          types: '公园' },
+  playground: { l: '游乐场',   e: '🛝', t: ['outdoor'],          types: '游乐场|游乐园|儿童乐园' },
+  museum:     { l: '博物馆',   e: '🏛️', t: ['ac', 'indoor'],    types: '博物馆' },
+  mall:       { l: '商场空调', e: '🛍️', t: ['ac', 'indoor'],    types: '购物中心|商场' },
+  library:    { l: '图书馆',   e: '📚', t: ['ac', 'indoor'],    types: '图书馆' },
+  zoo:        { l: '动物园',   e: '🐼', t: ['outdoor','activity'], types: '动物园|水族馆|海洋馆' },
 };
 
+// ---- Init ----
 // ---- Init ----
 function init() {
   map = L.map('map', {
@@ -237,169 +219,93 @@ async function fetchPlaces() {
   fetchError = null;
   places = [];
 
-  const bb = getBBox(userLat, userLon, SEARCH_RADIUS_M);
-  const bbs = `${bb.south},${bb.west},${bb.north},${bb.east}`;
+  var gcjCenter = wgs84ToGcj02(userLon, userLat);
+  var locStr = gcjCenter.lon.toFixed(6) + ',' + gcjCenter.lat.toFixed(6);
+  var catKeys = Object.keys(CATS).filter(function(k) { return k !== 'all'; });
 
-  const catKeys = Object.keys(CATS).filter(k => k !== 'all');
-  const results = {};  // cat → places[]
+  // Phase 1: parallel Amap POI search (all categories at once)
+  var results;
+  try {
+    results = await Promise.all(catKeys.map(function(cat) {
+      return fetchAmapPOI(cat, locStr, SEARCH_RADIUS_M);
+    }));
+  } catch(e) { results = []; }
 
-  // ====== Phase 1: fire all 6 categories in parallel (6x faster than serial) ======
-  const tasks = catKeys.map(async (cat) => {
-    try {
-      const query = CATS[cat].q(bbs);
-      const data = await overpassQuery(query);
-      const items = [];
-      if (data && data.elements) {
-        data.elements.forEach(el => {
-          const lat = el.lat || el.center?.lat;
-          const lon = el.lon || el.center?.lon;
-          if (!lat || !lon) return;
-          const name = el.tags?.name || el.tags?.['name:zh'] ||
-                       el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
-          const gcj = wgs84ToGcj02(lon, lat);
-          items.push({
-            id: el.type + el.id, lat: gcj.lat, lon: gcj.lon, cat,
-            name: name, tags: el.tags || {},
-          });
-        });
-      }
-      results[cat] = items;
-      // Progressive: show results as each category finishes
-      setStatus('busy', `🔍 已发现 ${Object.values(results).flat().length} 个地点...`);
-      mergeAndShow();
-    } catch (e) {
-      console.warn(`[${cat}] 失败:`, e.message);
+  var all = [];
+  var anyOk = false;
+  (results || []).forEach(function(items, i) {
+    if (items && items.length > 0) {
+      anyOk = true;
+      items.forEach(function(p) { p.cat = catKeys[i]; });
+      all = all.concat(items);
     }
   });
 
-  await Promise.allSettled(tasks);
-  showLoading(false);
-
-  if (places.length > 0) {
-    setStatus('ok', '✅ ' + places.length + '个地点');
-    return;
+  // Phase 2: if nothing found, expand radius
+  if (!anyOk) {
+    setStatus('busy', '🔍 扩大范围搜索...');
+    try {
+      results = await Promise.all(catKeys.map(function(cat) {
+        return fetchAmapPOI(cat, locStr, FALLBACK_RADIUS_M);
+      }));
+      (results || []).forEach(function(items, i) {
+        if (items && items.length > 0) {
+          items.forEach(function(p) { p.cat = catKeys[i]; });
+          all = all.concat(items);
+        }
+      });
+    } catch(e) { console.warn('Expanded search failed:', e.message); }
   }
 
-  // ====== Phase 2: all failed — retry with larger radius ======
-  setStatus('busy', '🔍 扩大范围搜索...');
-  const bb2 = getBBox(userLat, userLon, FALLBACK_RADIUS_M);
-  const bbs2 = `${bb2.south},${bb2.west},${bb2.north},${bb2.east}`;
-
-  let anyOk = false;
-  const retryTasks = catKeys.map(async (cat) => {
-    try {
-      const query = CATS[cat].q(bbs2);
-      const data = await overpassQuery(query);
-      const items = [];
-      if (data && data.elements) {
-        data.elements.forEach(el => {
-          const lat = el.lat || el.center?.lat;
-          const lon = el.lon || el.center?.lon;
-          if (!lat || !lon) return;
-          const name = el.tags?.name || el.tags?.['name:zh'] ||
-                       el.tags?.['name:en'] || el.tags?.name_zh || CATS[cat].l;
-          const gcj = wgs84ToGcj02(lon, lat);
-          items.push({
-            id: el.type + el.id, lat: gcj.lat, lon: gcj.lon, cat,
-            name: name, tags: el.tags || {},
-          });
-        });
-      }
-      if (items.length > 0) { results[cat] = items; anyOk = true; }
-    } catch (e) { /* ignore */ }
+  // Deduplicate by 100m proximity
+  var seen = {};
+  var merged = [];
+  all.forEach(function(p) {
+    var key = p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
+    if (!seen[key]) { seen[key] = true; merged.push(p); }
   });
-  await Promise.allSettled(retryTasks);
+  places = merged;
+  places.forEach(function(p) {
+    p.dist = haversine(userLat, userLon, p.lat, p.lon);
+  });
+  places.sort(function(a, b) { return a.dist - b.dist; });
 
-  if (anyOk) {
-    mergeAndShow();
-    setStatus('ok', '✅ ' + places.length + '个地点（扩大范围）');
-  } else if (Object.keys(results).length === 0) {
-    fetchError = '数据服务连接失败，请检查网络后重试。';
-    setStatus('err', '⚠️ 服务不可用');
-    renderAll();
+  showLoading(false);
+  if (places.length > 0) {
+    setStatus('ok', '✅ ' + places.length + '个地点');
   } else {
     fetchError = '该区域暂无收录的遛娃地点，请尝试移动到城市中心区域。';
     setStatus('err', '⚠️ 周边暂无');
-    renderAll();
   }
-
-  // ====== Merge & render helper ======
-  function mergeAndShow() {
-    const all = [];
-    for (const c of Object.keys(results)) all.push(...results[c]);
-    // Deduplicate: node > way for same-name within 300m
-    const merged = [];
-    all.forEach(p => {
-      const dup = merged.find(ex =>
-        (p.name || '').trim() === (ex.name || '').trim() &&
-        haversine(p.lat, p.lon, ex.lat, ex.lon) < 300
-      );
-      if (dup) {
-        if (p.id.startsWith('node') && !dup.id.startsWith('node')) {
-          dup.lat = p.lat; dup.lon = p.lon; dup.id = p.id;
-        }
-      } else {
-        merged.push(p);
-      }
-    });
-    places = merged;
-    places.forEach(p => { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
-    places.sort((a, b) => a.dist - b.dist);
-    renderAll();
-  }
+  renderAll();
 }
-async function overpassQuery(query) {
-  const body = 'data=' + encodeURIComponent(query);
-  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
-  // All Overpass endpoints to try
-  const endpoints = [
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter',
-  ];
-
-  const tryFetch = async (url, timeoutMs) => {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const resp = await fetch(url, { method: 'POST', headers, body, signal: ctrl.signal });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      return resp;
-    } finally {
-      clearTimeout(t);
-    }
-  };
-
-  // Phase 1: Race all endpoints + proxy, fastest wins
-  const promises = endpoints.map(url => tryFetch(url, 8000));
-  if (window.location.protocol !== 'file:') {
-    promises.push(tryFetch(OVERPASS_PROXY, 3000).catch(() => null));
-  }
-
-  // Wait for the first successful response
-  // We use a manual race since Promise.any might not handle null properly
-  const results = await Promise.allSettled(promises);
-  const firstOk = results.find(r => r.status === 'fulfilled' && r.value && r.value !== null);
-  if (firstOk) return await firstOk.value.json();
-
-  // Phase 2: Sequential retry with longer timeout
-  for (const url of endpoints) {
-    try {
-      const resp = await tryFetch(url, 12000);
-      return await resp.json();
-    } catch (e) {
-      console.warn('Overpass retry failed:', url, e.message);
-    }
-  }
-
-  // Phase 3: Proxy last resort
-  try {
-    const resp = await tryFetch(OVERPASS_PROXY, 15000);
-    return await resp.json();
-  } catch (e) { /* ignore */ }
-
-  throw new Error('所有数据源均不可达');
+async function fetchAmapPOI(cat, locStr, radius) {
+  var types = CATS[cat].types;
+  var url = 'https://restapi.amap.com/v3/place/around?key=' + AMAP_KEY +
+    '&location=' + locStr + '&radius=' + radius +
+    '&types=' + encodeURIComponent(types) +
+    '&offset=25&output=json';
+  var ctrl = new AbortController();
+  var t = setTimeout(function() { ctrl.abort(); }, 8000);
+  var resp = await fetch(url, { signal: ctrl.signal });
+  clearTimeout(t);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  var data = await resp.json();
+  if (data.status !== '1') throw new Error(data.info || 'API error');
+  return (data.pois || []).map(function(p) {
+    var loc = p.location.split(',');
+    return {
+      id: 'a_' + p.id,
+      lat: parseFloat(loc[1]),
+      lon: parseFloat(loc[0]),
+      name: p.name,
+      address: p.address || '',
+      tags: { district: p.adname || '', city: p.cityname || '' },
+    };
+  });
 }
+
 
 // ---- Render ----
 function renderAll() {
@@ -425,7 +331,7 @@ function renderAll() {
 
     const d = formatDistance(p.dist);
     const tg = buildTagHtml(p.cat);
-    const addr2 = formatAddress(p.tags, p.lat, p.lon);
+    const addr2 = formatAddress(p);
     const addrLine = addr2 ? `<div style="color:#666;font-size:10px;margin-top:3px">📍 ${escHtml(addr2)}</div>` : '';
     m.bindPopup(`<div style="font-size:13px"><b>${escHtml(p.name)}</b>
       <div style="color:#666;font-size:11px;margin:2px 0">${CATS[p.cat]?.e} ${CATS[p.cat]?.l} · ${d}</div>
@@ -434,7 +340,6 @@ function renderAll() {
 
   // Kick off async address lookups (throttled queue, 1/sec)
   top.forEach(function(p) {
-    enqueueAddress(p);
   });
   updateDrawer(top);
 }
@@ -476,14 +381,14 @@ function updateDrawer(filtered) {
     list.innerHTML = filtered.map(p => {
       const d = formatDistance(p.dist);
       const tg = buildTagHtml(p.cat);
-      const addr = formatAddress(p.tags, p.lat, p.lon);
+      const addr = formatAddress(p);
       const isCoord = addr && addr.indexOf('°') > 0; // coordinate fallback
       return '<div class="place-item" data-id="' + p.id + '" onclick="flyTo(' + p.lat + ',' + p.lon + ')">' +
         '<div class="p-emoji">' + (CATS[p.cat]?.e || '📍') + '</div>' +
         '<div class="p-info">' +
           '<div class="p-name">' + escHtml(p.name) + '</div>' +
           '<div class="p-meta">' + CATS[p.cat]?.l + ' ' + tg + '</div>' +
-          '<div class="p-addr' + (isCoord ? ' p-addr-coord' : '') + '">📍 ' + escHtml(addr) + '</div>' +
+          '<div class="p-addr">📍 ' + escHtml(addr) + '</div>' +
         '</div>' +
         '<div class="p-dist">' + d + '</div>' +
       '</div>';
@@ -535,114 +440,15 @@ function toast(msg) {
 }
 
 // ---- Utility ----
-function getBBox(lat, lon, radiusM) {
-  const dLat = radiusM / 111320;
-  const dLon = radiusM / (111320 * Math.cos(lat * Math.PI / 180));
-  return {
-    south: (lat - dLat).toFixed(6),
-    north: (lat + dLat).toFixed(6),
-    west:  (lon - dLon).toFixed(6),
-    east:  (lon + dLon).toFixed(6),
-  };
-}
 
-// 地址缓存：避免重复请求逆地理编码
-var _addrCache = {};
-
-// 逆地理请求队列，限速 1 次/秒（Nominatim 公平使用政策）
-var _addrQueue = [];
-var _addrTimer = null;
-
-function enqueueAddress(p) {
-  if (cachedAddress(p.lat, p.lon)) return;
-  var key = p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
-  if (_addrCache[key] !== undefined) return; // already queued/done/failed
-  _addrCache[key] = null;
-  _addrQueue.push(p);
-  if (!_addrTimer) flushQueue();
-}
-
-function flushQueue() {
-  if (_addrQueue.length === 0) { _addrTimer = null; return; }
-  var p = _addrQueue.shift();
-  var lat = p.lat, lon = p.lon;
-  var key = lat.toFixed(4) + ',' + lon.toFixed(4);
-
-  var url = 'https://nominatim.openstreetmap.org/reverse?lat=' + lat +
-    '&lon=' + lon + '&format=json&zoom=16&accept-language=zh';
-  var ctrl = new AbortController();
-  var t = setTimeout(function() { ctrl.abort(); }, 5000);
-
-  fetch(url, { signal: ctrl.signal })
-    .then(function(resp) { clearTimeout(t); return resp.ok ? resp.json() : Promise.reject(); })
-    .then(function(data) {
-      var addr = (data.display_name || '').replace(/,?\s*\d{6}/g, '').replace(/，?\s*\d{6}/g, '');
-      var parts = addr.split(',');
-      if (parts.length > 4) parts = parts.slice(0, 4);
-      addr = parts.join(',').replace(/^,\s*/, '').trim();
-      _addrCache[key] = addr || '___empty___';
-      if (addr) updateAddressText(p, addr);
-    }).catch(function(e) {
-      console.warn('Nominatim failed for ' + key + ':', e && e.message);
-      _addrCache[key] = '___empty___';
-    }).finally(function() {
-      _addrTimer = setTimeout(flushQueue, 1200);
-    });
-}
-
-// DOM 局部更新：只替换地址文本
-function updateAddressText(p, addr) {
-  var items = document.querySelectorAll('.place-item');
-  var target = p.id;
-  for (var i = 0; i < items.length; i++) {
-    var item = items[i];
-    var addrEl = item.querySelector('.p-addr');
-    if (addrEl && item.getAttribute('data-id') === target) {
-      // textContent auto-escapes, no XSS risk
-      addrEl.textContent = '📍 ' + addr;
-      addrEl.classList.remove('p-addr-coord');
-      break;
-    }
-  }
-}
-
-// 同步版本：从缓存拿（如果还没加载完就返回空，避免阻塞渲染）
-function cachedAddress(lat, lon) {
-  var key = lat.toFixed(4) + ',' + lon.toFixed(4);
-  var v = _addrCache[key];
-  // null=loading, '___empty___'=tried and failed, otherwise=valid address
-  if (!v || v === '___empty___') return '';
-  return v;
-}
-
-// 坐标格式化为 "31.23°N, 121.47°E" 作为兜底地址
-function coordAddress(lat, lon) {
-  var ns = lat >= 0 ? 'N' : 'S';
-  var ew = lon >= 0 ? 'E' : 'W';
-  return Math.abs(lat).toFixed(4) + '°' + ns + ', ' + Math.abs(lon).toFixed(4) + '°' + ew;
-}
-
-// 提取地址：OSM tags → 逆地理缓存 → 坐标兜底（保证始终有内容）
-function formatAddress(tags, lat, lon) {
-  var city = tags['addr:city'] || tags['city'] || '';
-  var dist = tags['addr:district'] || tags['district'] || tags['addr:suburb'] || tags['addr:county'] || '';
-  var street = tags['addr:street'] || tags['street'] || '';
-  var hn = tags['addr:housenumber'] || '';
-
-  if (city || dist || street) {
-    var p = [];
-    if (city) p.push(city.endsWith('市') ? city : city + '市');
-    if (dist) p.push(dist);
-    if (street) p.push(street + (hn ? hn + '号' : ''));
-    return p.join('');
-  }
-
-  // Prefer cached reverse-geocoded address over raw coordinates
-  var cached = cachedAddress(lat, lon);
-  if (cached) return cached;
-
-  // Absolute fallback: always show coordinates
-  return coordAddress(lat, lon);
+// 高德 POI 自带地址，直接使用
+function formatAddress(p) {
+  if (p.address) return p.address;
+  var t = p.tags || {};
+  var parts = [];
+  if (t.city) parts.push(t.city);
+  if (t.district) parts.push(t.district);
+  return parts.join('');
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
