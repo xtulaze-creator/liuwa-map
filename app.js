@@ -66,7 +66,6 @@ const CATS = {
 };
 
 // ---- Init ----
-// ---- Init ----
 function init() {
   map = L.map('map', {
     center: [31.2304, 121.4737],
@@ -87,10 +86,18 @@ function init() {
 
   // Category chips
   document.querySelectorAll('.cat-chip').forEach(c => {
-    c.addEventListener('click', () => {
-      document.querySelectorAll('.cat-chip').forEach(x => x.classList.remove('active'));
-      c.classList.add('active');
-      currentCat = c.dataset.cat;
+    c.addEventListener('click', function() {
+      var cat = this.dataset.cat;
+      if (cat === 'nursery' || cat === 'hospital' || cat === 'babyShop') {
+        document.querySelectorAll('.cat-chip').forEach(function(x) { x.classList.remove('active'); });
+        this.classList.add('active');
+        currentCat = cat;
+        fetchEmergency(cat);
+        return;
+      }
+      document.querySelectorAll('.cat-chip').forEach(function(x) { x.classList.remove('active'); });
+      this.classList.add('active');
+      currentCat = cat;
       renderAll();
     });
   });
@@ -213,6 +220,39 @@ function weatherAdvice(code, temp) {
 // ---- Places Search ----
 
 
+// 应急点位搜索（母婴室/医院/母婴用品）
+async function fetchEmergency(cat) {
+  showLoading(true);
+  setStatus('busy', '🔍 搜索中...');
+  places = [];
+
+  var gcjCenter = wgs84ToGcj02(userLon, userLat);
+  var locStr = gcjCenter.lon.toFixed(6) + ',' + gcjCenter.lat.toFixed(6);
+
+  try {
+    var items = await fetchAmapPOI(cat, locStr, FALLBACK_RADIUS_M);
+    if (items && items.length > 0) {
+      items.forEach(function(p) { p.cat = cat; });
+      var seen = {};
+      var merged = [];
+      items.forEach(function(p) {
+        var k = p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
+        if (!seen[k]) { seen[k] = true; merged.push(p); }
+      });
+      places = merged;
+      places.forEach(function(p) { p.dist = haversine(userLat, userLon, p.lat, p.lon); });
+      places.sort(function(a, b) { return a.dist - b.dist; });
+      setStatus('ok', '✅ ' + places.length + '个' + CATS[cat].l);
+    } else {
+      setStatus('ok', '⚠️ 周边暂无');
+    }
+  } catch(e) {
+    setStatus('err', '⚠️ 请求失败');
+  }
+  showLoading(false);
+  renderAll();
+}
+
 async function fetchPlaces() {
   showLoading(true);
   setStatus('busy', '🔍 搜索中...');
@@ -221,7 +261,7 @@ async function fetchPlaces() {
 
   var gcjCenter = wgs84ToGcj02(userLon, userLat);
   var locStr = gcjCenter.lon.toFixed(6) + ',' + gcjCenter.lat.toFixed(6);
-  var catKeys = Object.keys(CATS).filter(function(k) { return k !== 'all'; });
+  var catKeys = Object.keys(CATS).filter(function(k) { return k !== 'all' && k !== 'nursery' && k !== 'hospital' && k !== 'babyShop'; });
 
   // Phase 1: parallel Amap POI search (all categories at once)
   var results;
@@ -281,12 +321,12 @@ async function fetchPlaces() {
 }
 
 async function fetchAmapPOI(cat, locStr, radius) {
-  var types = CATS[cat].types;
+  var kw = CATS[cat].keywords;
   var params = [
     'key=' + AMAP_KEY,
     'location=' + locStr,
     'radius=' + radius,
-    'types=' + encodeURIComponent(types),
+    'keywords=' + encodeURIComponent(kw),
     'offset=25',
     'output=json'
   ].join('&');
@@ -544,9 +584,10 @@ function formatDistance(m) {
 }
 
 function categoryColor(cat) {
-  const colors = {
+  var colors = {
     park: '#4CAF50', playground: '#FF9800', museum: '#9C27B0',
-    mall: '#2196F3', library: '#607D8B', zoo: '#E91E63'
+    mall: '#2196F3', library: '#607D8B', zoo: '#E91E63',
+    nursery: '#e57373', hospital: '#e53935', babyShop: '#f06292'
   };
   return colors[cat] || '#757575';
 }

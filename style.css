@@ -236,3 +236,16 @@ body {
   transition: transform 0.15s;
 }
 .p-nav-btn:active { transform: scale(0.85); }
+
+/* ---- Emergency chips ---- */
+.cat-sep {
+  flex-shrink: 0; width: 1px; height: 18px;
+  background: #e0e0e0; margin: 4px 2px; align-self: center;
+}
+.cat-emerg {
+  border-color: #e57373;
+}
+.cat-emerg.active {
+  border-color: #e53935; background: #ffebee; color: #c62828;
+}
+.cat-emerg .emoji { font-size: 14px; }
